@@ -1,0 +1,2184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Today — Photo Library</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Inter', 'Segoe UI', 'Roboto', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    body { overflow: hidden; }
+    .photo-enter { animation: photoFadeIn 0.2s ease-out; }
+    @keyframes photoFadeIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+    .sidebar-transition { transition: width 0.2s ease, min-width 0.2s ease, opacity 0.15s ease; }
+    input[type="range"] { -webkit-appearance: none; background: transparent; height: 14px; display: flex; align-items: center; }
+    input[type="range"]::-webkit-slider-runnable-track { height: 4px; background: #e4e4e7; border-radius: 2px; width: 100%; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #18181b; cursor: pointer; border: 2px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.2); margin-top: -5px; }
+    .check-bounce { animation: checkBounce 0.2s ease; }
+    @keyframes checkBounce { 0% { transform: scale(0.8); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+    .shimmer-loading {
+      background: linear-gradient(90deg, #e4e4e7 25%, #f0f0f2 50%, #e4e4e7 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s ease-in-out infinite;
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  </style>
+</head>
+<body class="bg-zinc-50 text-zinc-900 antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext, memo } = React;
+
+    // ============================================================
+    // CONFIGURATION — Edit these values before deploying
+    // ============================================================
+    const CONFIG = {
+      GOOGLE_CLIENT_ID: '700263004414-g1ldbqapa95lk1b4rt2a155p4unf5id5.apps.googleusercontent.com',
+      ROOT_FOLDER_ID: '1uw3AsXLTuBUNcpow3KTIGln2NKTqk70b',
+      SCOPES: 'https://www.googleapis.com/auth/drive',
+      METADATA_FILENAME: '_today_library_metadata.json',
+      THUMB_MAP_FILENAME: '_today_thumbnail_map.json',
+      IMAGE_MIMES: new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff', 'image/bmp', 'image/svg+xml']),
+      PAGE_SIZE: 200,
+    };
+
+    // ============================================================
+    // TEAM MEMBERS (for people tagging)
+    // ============================================================
+    const TEAM_MEMBERS = [
+      'Adam', 'Adelaide', 'Alice', 'Alisia', 'Angel', 'Athalia',
+      'Beata', 'Beau', 'Bec', 'Belle',
+      'Callan', 'Candice', 'Cara',
+      'Damon', 'Dan', 'Dewani', 'Di Pierce',
+      'Emma', 'Eva', 'Evie',
+      'Fraser',
+      'Georgie', 'Gerard', 'Gretchen',
+      'Hayley Tasker', 'Hayley Travis', 'Hee-Won', 'Hunter',
+      'Jacob', 'James', 'Jason', 'Jeffrey', 'Jonathan Lovera', 'Jonathan Puc', 'Juliet',
+      'Karen', 'Kate',
+      'Lauren', 'Liana', 'Linda', 'Louise', 'Luca', 'Lucas', 'Lynton',
+      'Maddie', 'Maggie', 'Marina', 'Mark', 'May', 'Megan', 'Mosh',
+      'Nik',
+      'Penny',
+      'Ryan',
+      'Sam', 'Sonja', 'Sophie', 'Steph',
+      'Tait', 'Tayla', 'Tiffany',
+      'Ziz',
+    ];
+
+    const SERVICE_AREAS = [
+      'Impact strategy',
+      'Service innovation',
+      'Product and AI',
+      'Brand and communications',
+    ];
+
+    // ============================================================
+    // SVG ICONS
+    // ============================================================
+    const Icon = ({ name, size = 18, className = '', strokeWidth = 1.5 }) => {
+      const props = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+        stroke: 'currentColor', strokeWidth, strokeLinecap: 'round', strokeLinejoin: 'round',
+        className };
+      const icons = {
+        chevronRight: <svg {...props}><path d="M9 18l6-6-6-6"/></svg>,
+        chevronDown: <svg {...props}><path d="M6 9l6 6 6-6"/></svg>,
+        folder: <svg {...props}><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>,
+        folderOpen: <svg {...props}><path d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2l1-5a2 2 0 00-2-2H7a2 2 0 00-2 2l-1 5z"/></svg>,
+        search: <svg {...props}><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>,
+        star: <svg {...props}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+        starFill: <svg {...props} fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+        heart: <svg {...props}><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>,
+        heartFill: <svg {...props} fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>,
+        bookmark: <svg {...props}><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>,
+        bookmarkFill: <svg {...props} fill="currentColor"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>,
+        download: <svg {...props}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+        externalLink: <svg {...props}><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>,
+        x: <svg {...props}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+        check: <svg {...props}><polyline points="20 6 9 17 4 12"/></svg>,
+        image: <svg {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
+        sliders: <svg {...props}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg>,
+        filter: <svg {...props}><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>,
+        tag: <svg {...props}><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>,
+        users: <svg {...props}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>,
+        calendar: <svg {...props}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+        menu: <svg {...props}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+        grid: <svg {...props}><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
+        sidebar: <svg {...props}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>,
+        arrowLeft: <svg {...props}><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>,
+        arrowRight: <svg {...props}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>,
+        checkSquare: <svg {...props}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>,
+        square: <svg {...props}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>,
+        loader: <svg {...props} className={`animate-spin ${className}`}><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>,
+        zoomIn: <svg {...props}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>,
+        archive: <svg {...props}><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>,
+        signOut: <svg {...props}><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+        sortAsc: <svg {...props}><path d="M11 5h10M11 9h7M11 13h4M3 17l3 3 3-3M6 18V4"/></svg>,
+        info: <svg {...props}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
+      };
+      return icons[name] || null;
+    };
+
+    // ============================================================
+    // UTILITIES
+    // ============================================================
+    // ---- Thumbnail URL helpers ----
+    // Primary approach: use thumbnailLink from Drive API in a plain <img> tag
+    // (img tags bypass CORS, so lh3.googleusercontent.com works).
+    // Fallback for failures: authenticated Drive API download → blob URL.
+    function getThumbnailUrl(photo, width = 400) {
+      if (photo.thumbnailLink) {
+        let url = photo.thumbnailLink;
+        // Replace size param anywhere in URL (not anchored to end — URLs may have trailing params)
+        if (/=s\d+/.test(url)) url = url.replace(/=s\d+/, `=w${width}`);
+        else if (/=w\d+/.test(url)) url = url.replace(/=w\d+/, `=w${width}`);
+        return url;
+      }
+      return null; // no thumbnail available via URL
+    }
+
+    // Concurrency-limited fallback loader via authenticated Drive API
+    const thumbBlobCache = new Map();
+    const thumbQueue = [];
+    let thumbActive = 0;
+    const THUMB_CONCURRENCY = 4;
+
+    function processThumbQueue() {
+      while (thumbActive < THUMB_CONCURRENCY && thumbQueue.length > 0) {
+        const job = thumbQueue.shift();
+        thumbActive++;
+        job().finally(() => { thumbActive--; processThumbQueue(); });
+      }
+    }
+
+    function loadThumbBlob(fileId, token) {
+      if (thumbBlobCache.has(fileId)) return Promise.resolve(thumbBlobCache.get(fileId));
+      return new Promise((resolve) => {
+        thumbQueue.push(async () => {
+          try {
+            const resp = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (!resp.ok) { resolve(null); return; }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            thumbBlobCache.set(fileId, url);
+            resolve(url);
+          } catch { resolve(null); }
+        });
+        processThumbQueue();
+      });
+    }
+    function getDriveUrl(fileId) {
+      return `https://drive.google.com/file/d/${fileId}/view`;
+    }
+    function formatDate(dateStr) {
+      if (!dateStr) return '';
+      const d = new Date(dateStr);
+      return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+    }
+    function formatFileSize(bytes) {
+      if (!bytes) return '';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+    function debounce(fn, ms) {
+      let timer;
+      return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+    }
+
+    // LocalStorage helpers
+    const LS = {
+      get(key, fallback) {
+        try { const v = localStorage.getItem(`today_photos_${key}`); return v ? JSON.parse(v) : fallback; }
+        catch { return fallback; }
+      },
+      set(key, value) {
+        try { localStorage.setItem(`today_photos_${key}`, JSON.stringify(value)); } catch {}
+      }
+    };
+
+    // ============================================================
+    // GOOGLE DRIVE API
+    // ============================================================
+    // Global ref so driveApiFetch can clear an expired token
+    let _clearExpiredToken = null;
+
+    async function driveApiFetch(path, token, options = {}) {
+      const base = 'https://www.googleapis.com/drive/v3';
+      const url = path.startsWith('http') ? path : `${base}${path}`;
+      const res = await fetch(url, {
+        ...options,
+        headers: { Authorization: `Bearer ${token}`, ...options.headers }
+      });
+      if (res.status === 401) {
+        // Token expired — clear it so the app shows the sign-in screen
+        sessionStorage.removeItem('today_photos_token');
+        if (_clearExpiredToken) _clearExpiredToken();
+        throw new Error('Session expired — please sign in again');
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `Drive API error ${res.status}`);
+      }
+      return options.raw ? res : res.json();
+    }
+
+    async function listFolderChildren(folderId, token, mimeFilter = null) {
+      let allFiles = [];
+      let pageToken = null;
+      do {
+        let q = `'${folderId}' in parents and trashed = false`;
+        if (mimeFilter) q += ` and mimeType = '${mimeFilter}'`;
+        const fields = 'nextPageToken,files(id,name,mimeType,thumbnailLink,webViewLink,webContentLink,createdTime,modifiedTime,imageMediaMetadata,size,parents)';
+        let url = `/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=${CONFIG.PAGE_SIZE}&orderBy=name`;
+        if (pageToken) url += `&pageToken=${pageToken}`;
+        const data = await driveApiFetch(url, token);
+        allFiles = allFiles.concat(data.files || []);
+        pageToken = data.nextPageToken;
+      } while (pageToken);
+      return allFiles;
+    }
+
+    async function loadSubfolders(folderId, token) {
+      return listFolderChildren(folderId, token, 'application/vnd.google-apps.folder');
+    }
+
+    async function loadImages(folderId, token) {
+      const all = await listFolderChildren(folderId, token);
+      return all.filter(f => CONFIG.IMAGE_MIMES.has(f.mimeType));
+    }
+
+    async function loadImagesRecursive(folderId, token, onProgress) {
+      // Load images from this folder
+      const all = await listFolderChildren(folderId, token);
+      const images = all.filter(f => CONFIG.IMAGE_MIMES.has(f.mimeType));
+      const subfolders = all.filter(f => f.mimeType === 'application/vnd.google-apps.folder');
+
+      if (onProgress) onProgress(images.length, subfolders.length);
+
+      // Recursively load from subfolders (in parallel, batched to avoid rate limits)
+      const batchSize = 5;
+      let allImages = [...images];
+      for (let i = 0; i < subfolders.length; i += batchSize) {
+        const batch = subfolders.slice(i, i + batchSize);
+        const results = await Promise.all(
+          batch.map(f => loadImagesRecursive(f.id, token, onProgress))
+        );
+        for (const r of results) allImages = allImages.concat(r);
+      }
+      return allImages;
+    }
+
+    // Fetch specific files by their IDs (for quick filter preloading)
+    async function fetchFilesByIds(ids, token) {
+      if (!ids || ids.length === 0) return [];
+      const fields = 'id,name,mimeType,thumbnailLink,webViewLink,webContentLink,createdTime,modifiedTime,imageMediaMetadata,size,parents';
+      const batchSize = 50; // avoid overly long queries
+      let allFiles = [];
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        const results = await Promise.all(
+          batch.map(id =>
+            driveApiFetch(`/files/${id}?fields=${encodeURIComponent(fields)}`, token)
+              .catch(() => null)
+          )
+        );
+        allFiles = allFiles.concat(results.filter(f => f && f.id));
+      }
+      return allFiles;
+    }
+
+    // Metadata file (shared tags, Official selects)
+    async function findMetadataFile(token) {
+      const q = `name = '${CONFIG.METADATA_FILENAME}' and '${CONFIG.ROOT_FOLDER_ID}' in parents and trashed = false`;
+      const data = await driveApiFetch(`/files?q=${encodeURIComponent(q)}&fields=files(id)`, token);
+      return data.files?.[0]?.id || null;
+    }
+
+    async function loadMetadata(token) {
+      const fileId = await findMetadataFile(token);
+      if (!fileId) return { adamSelects: [], favourites: [], tags: {}, version: 1 };
+      const data = await driveApiFetch(`/files/${fileId}?alt=media`, token);
+      return data;
+    }
+
+    async function saveMetadata(metadata, token) {
+      const existing = await findMetadataFile(token);
+      const body = JSON.stringify({ ...metadata, lastUpdated: new Date().toISOString() });
+      if (existing) {
+        await driveApiFetch(
+          `https://www.googleapis.com/upload/drive/v3/files/${existing}?uploadType=media`,
+          token,
+          { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
+        );
+      } else {
+        // Create new file
+        const metaRes = await driveApiFetch('/files', token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: CONFIG.METADATA_FILENAME, parents: [CONFIG.ROOT_FOLDER_ID], mimeType: 'application/json' })
+        });
+        await driveApiFetch(
+          `https://www.googleapis.com/upload/drive/v3/files/${metaRes.id}?uploadType=media`,
+          token,
+          { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
+        );
+      }
+    }
+
+    // Thumbnail map (originalFileId -> thumbnailFileId, generated by Cloud Function)
+    async function loadThumbMap(token) {
+      try {
+        const q = `name = '${CONFIG.THUMB_MAP_FILENAME}' and '${CONFIG.ROOT_FOLDER_ID}' in parents and trashed = false`;
+        const data = await driveApiFetch(`/files?q=${encodeURIComponent(q)}&fields=files(id)`, token);
+        const fileId = data.files?.[0]?.id;
+        if (!fileId) return {};
+        const mapData = await driveApiFetch(`/files/${fileId}?alt=media`, token);
+        console.log(`Loaded thumbnail map: ${Object.keys(mapData).length} entries`);
+        return mapData;
+      } catch (err) {
+        console.warn('Could not load thumbnail map:', err);
+        return {};
+      }
+    }
+
+    async function downloadFileBlob(fileId, token) {
+      const res = await driveApiFetch(`/files/${fileId}?alt=media`, token, { raw: true });
+      return res.blob();
+    }
+
+    // ---- In-app thumbnail generator ----
+    // Uses Canvas API to resize images client-side and uploads small JPEGs to Drive.
+    const THUMB_FOLDER_NAME = '_today_thumbnails';
+    const THUMB_WIDTH = 600;
+    const THUMB_QUALITY = 0.75;
+
+    async function getOrCreateThumbFolder(token) {
+      const q = `name = '${THUMB_FOLDER_NAME}' and '${CONFIG.ROOT_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+      const data = await driveApiFetch(`/files?q=${encodeURIComponent(q)}&fields=files(id)`, token);
+      if (data.files?.length > 0) return data.files[0].id;
+      // Create folder
+      const folder = await driveApiFetch('/files', token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: THUMB_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder', parents: [CONFIG.ROOT_FOLDER_ID] }),
+      });
+      return folder.id;
+    }
+
+    function resizeImageToBlob(imgBlob, maxWidth, quality) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, maxWidth / img.width);
+          const w = Math.round(img.width * scale);
+          const h = Math.round(img.height * scale);
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          canvas.toBlob(
+            (blob) => { if (blob) resolve(blob); else reject(new Error('Canvas toBlob failed')); },
+            'image/jpeg',
+            quality
+          );
+          URL.revokeObjectURL(img.src);
+        };
+        img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('Image load failed')); };
+        img.src = URL.createObjectURL(imgBlob);
+      });
+    }
+
+    async function uploadThumbToFolder(thumbBlob, originalId, folderId, token) {
+      const metadata = { name: `${originalId}.jpg`, mimeType: 'image/jpeg', parents: [folderId] };
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', thumbBlob, `${originalId}.jpg`);
+      const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+      const data = await resp.json();
+      return data.id;
+    }
+
+    async function findThumbMapFileId(token) {
+      const q = `name = '${CONFIG.THUMB_MAP_FILENAME}' and '${CONFIG.ROOT_FOLDER_ID}' in parents and trashed = false`;
+      const data = await driveApiFetch(`/files?q=${encodeURIComponent(q)}&fields=files(id)`, token);
+      return data.files?.[0]?.id || null;
+    }
+
+    async function saveThumbMapToDrive(thumbMap, token) {
+      const body = JSON.stringify(thumbMap);
+      const existingId = await findThumbMapFileId(token);
+      if (existingId) {
+        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=media`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body,
+        });
+      } else {
+        const metadata = { name: CONFIG.THUMB_MAP_FILENAME, mimeType: 'application/json', parents: [CONFIG.ROOT_FOLDER_ID] };
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', new Blob([body], { type: 'application/json' }), CONFIG.THUMB_MAP_FILENAME);
+        await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+        });
+      }
+    }
+
+    async function generateThumbnails(allPhotos, existingThumbMap, token, onProgress) {
+      const needsThumb = allPhotos.filter(p => !existingThumbMap[p.id]);
+      if (needsThumb.length === 0) return { map: existingThumbMap, created: 0 };
+
+      const thumbFolderId = await getOrCreateThumbFolder(token);
+      const updatedMap = { ...existingThumbMap };
+      let created = 0;
+      let failed = 0;
+
+      for (let i = 0; i < needsThumb.length; i++) {
+        const photo = needsThumb[i];
+        if (onProgress) onProgress({ current: i + 1, total: needsThumb.length, name: photo.name, created, failed });
+        try {
+          // Download original
+          const origBlob = await downloadFileBlob(photo.id, token);
+          // Resize with Canvas
+          const thumbBlob = await resizeImageToBlob(origBlob, THUMB_WIDTH, THUMB_QUALITY);
+          // Upload
+          const thumbId = await uploadThumbToFolder(thumbBlob, photo.id, thumbFolderId, token);
+          updatedMap[photo.id] = thumbId;
+          created++;
+        } catch (err) {
+          console.warn(`Thumb failed for ${photo.name}:`, err);
+          failed++;
+        }
+
+        // Save map every 20 images (in case browser closes)
+        if (created > 0 && created % 20 === 0) {
+          await saveThumbMapToDrive(updatedMap, token);
+        }
+      }
+
+      // Final save
+      await saveThumbMapToDrive(updatedMap, token);
+      if (onProgress) onProgress({ current: needsThumb.length, total: needsThumb.length, created, failed, done: true });
+      return { map: updatedMap, created };
+    }
+
+    // ============================================================
+    // APP CONTEXT
+    // ============================================================
+    const AppContext = createContext();
+
+    function AppProvider({ children }) {
+      const [token, setTokenRaw] = useState(() => sessionStorage.getItem('today_photos_token'));
+      const [user, setUser] = useState(() => LS.get('user', null));
+      const setToken = useCallback((t) => {
+        setTokenRaw(t);
+        if (t) sessionStorage.setItem('today_photos_token', t);
+        else sessionStorage.removeItem('today_photos_token');
+      }, []);
+
+      // Register global token-clear so driveApiFetch can expire the session
+      useEffect(() => {
+        _clearExpiredToken = () => { setTokenRaw(null); };
+        return () => { _clearExpiredToken = null; };
+      }, []);
+
+      // Validate stored token on load — if expired, clear it; also refresh user info
+      useEffect(() => {
+        const t = sessionStorage.getItem('today_photos_token');
+        if (!t) return;
+        fetch('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + t)
+          .then(r => {
+            if (!r.ok) { setTokenRaw(null); sessionStorage.removeItem('today_photos_token'); }
+            else {
+              // Refresh user info if missing email
+              if (!user?.email) {
+                fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+                  headers: { Authorization: `Bearer ${t}` }
+                }).then(r => r.json()).then(driveData => {
+                  if (driveData.user) {
+                    const data = {
+                      email: driveData.user.emailAddress,
+                      name: driveData.user.displayName,
+                      picture: driveData.user.photoLink,
+                    };
+                    setUser(prev => ({ ...prev, ...data }));
+                    LS.set('user', { ...user, ...data });
+                  }
+                }).catch(() => {});
+              }
+            }
+          })
+          .catch(() => { setTokenRaw(null); sessionStorage.removeItem('today_photos_token'); });
+      }, []);
+
+      // Folder tree: { id, name, children: [...], loaded: bool }
+      const [folderTree, setFolderTree] = useState(null);
+      const [expandedFolders, setExpandedFolders] = useState(new Set([CONFIG.ROOT_FOLDER_ID]));
+      const [currentFolderId, setCurrentFolderId] = useState(CONFIG.ROOT_FOLDER_ID);
+      const [currentFolderName, setCurrentFolderName] = useState('Photo Library');
+
+      // Photos
+      const [photos, setPhotos] = useState([]);
+      const [allPhotosFlat, setAllPhotosFlat] = useState([]); // For global search
+      const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
+      const [isLoadingTree, setIsLoadingTree] = useState(false);
+      const [loadingStatus, setLoadingStatus] = useState('');
+
+      // Shared metadata
+      const [metadata, setMetadata] = useState({ adamSelects: [], favourites: [], tags: {}, version: 1 });
+      const metaSaveTimer = useRef(null);
+
+      // Pre-generated thumbnail map (originalId -> thumbFileId)
+      const [thumbMap, setThumbMap] = useState({});
+
+      // Shared favourites (stored in Drive metadata alongside Official selects)
+      const [favourites, setFavourites] = useState(new Set());
+
+      // Personal picks (stored per-user in Drive metadata)
+      const [myPicks, setMyPicks] = useState(new Set());
+
+      // View controls
+      const [thumbSize, setThumbSize] = useState(() => LS.get('thumbSize', 220));
+      const [searchQuery, setSearchQuery] = useState('');
+      const [filterPeople, setFilterPeople] = useState([]);
+      const [filterServiceAreas, setFilterServiceAreas] = useState([]);
+      const [sortBy, setSortBy] = useState('date');
+      const [sortOrder, setSortOrder] = useState('desc');
+      const [quickFilter, setQuickFilter] = useState('adamSelects'); // 'favourites' | 'adamSelects' | 'myPicks' | null
+
+      // Selection
+      const [selectedPhotos, setSelectedPhotos] = useState(new Set());
+      const [selectMode, setSelectMode] = useState(false);
+
+      // Lightbox
+      const [lightboxIdx, setLightboxIdx] = useState(-1);
+
+      // Sidebar
+      const [sidebarOpen, setSidebarOpen] = useState(true);
+
+      // Tag dialog
+      const [tagDialogPhoto, setTagDialogPhoto] = useState(null);
+
+      // Zip progress
+      const [zipProgress, setZipProgress] = useState(null);
+
+      // Error
+      const [error, setError] = useState(null);
+
+      // Sync favourites from metadata when it loads
+      useEffect(() => {
+        if (metadata.favourites) setFavourites(new Set(metadata.favourites));
+      }, [metadata.favourites?.length]);
+
+      // Sync personal picks from metadata when it loads
+      const userEmail = user?.email;
+      useEffect(() => {
+        if (metadata.personalPicks && userEmail) {
+          setMyPicks(new Set(metadata.personalPicks[userEmail] || []));
+        }
+      }, [metadata.personalPicks, userEmail]);
+      useEffect(() => { LS.set('thumbSize', thumbSize); }, [thumbSize]);
+
+      // Save metadata to Drive (debounced)
+      const persistMetadata = useCallback((newMeta) => {
+        setMetadata(newMeta);
+        if (metaSaveTimer.current) clearTimeout(metaSaveTimer.current);
+        metaSaveTimer.current = setTimeout(async () => {
+          try { if (token) await saveMetadata(newMeta, token); }
+          catch (e) { console.error('Failed to save metadata:', e); }
+        }, 1500);
+      }, [token]);
+
+      // Toggle favourite (shared via Drive metadata)
+      const toggleFavourite = useCallback((photoId) => {
+        setFavourites(prev => {
+          const next = new Set(prev);
+          next.has(photoId) ? next.delete(photoId) : next.add(photoId);
+          // Also persist to metadata
+          setMetadata(prevMeta => {
+            const newMeta = { ...prevMeta, favourites: [...next] };
+            persistMetadata(newMeta);
+            return newMeta;
+          });
+          return next;
+        });
+      }, [persistMetadata]);
+
+      // Toggle personal pick (per-user via Drive metadata)
+      const toggleMyPick = useCallback((photoId) => {
+        if (!userEmail) return;
+        setMyPicks(prev => {
+          const next = new Set(prev);
+          next.has(photoId) ? next.delete(photoId) : next.add(photoId);
+          setMetadata(prevMeta => {
+            const personalPicks = { ...(prevMeta.personalPicks || {}) };
+            personalPicks[userEmail] = [...next];
+            const newMeta = { ...prevMeta, personalPicks };
+            persistMetadata(newMeta);
+            return newMeta;
+          });
+          return next;
+        });
+      }, [persistMetadata, userEmail]);
+
+      // Toggle Official select
+      const toggleAdamSelect = useCallback((photoId) => {
+        setMetadata(prev => {
+          const selects = new Set(prev.adamSelects || []);
+          selects.has(photoId) ? selects.delete(photoId) : selects.add(photoId);
+          const newMeta = { ...prev, adamSelects: [...selects] };
+          persistMetadata(newMeta);
+          return newMeta;
+        });
+      }, [persistMetadata]);
+
+      // Tag person
+      const tagPerson = useCallback((photoId, person, remove = false) => {
+        setMetadata(prev => {
+          const tags = { ...prev.tags };
+          if (!tags[photoId]) tags[photoId] = [];
+          if (remove) {
+            tags[photoId] = tags[photoId].filter(p => p !== person);
+          } else if (!tags[photoId].includes(person)) {
+            tags[photoId] = [...tags[photoId], person];
+          }
+          const newMeta = { ...prev, tags };
+          persistMetadata(newMeta);
+          return newMeta;
+        });
+      }, [persistMetadata]);
+
+      // Tag service area
+      const tagServiceArea = useCallback((photoId, area, remove = false) => {
+        setMetadata(prev => {
+          const serviceAreas = { ...(prev.serviceAreas || {}) };
+          if (!serviceAreas[photoId]) serviceAreas[photoId] = [];
+          if (remove) {
+            serviceAreas[photoId] = serviceAreas[photoId].filter(a => a !== area);
+          } else if (!serviceAreas[photoId].includes(area)) {
+            serviceAreas[photoId] = [...serviceAreas[photoId], area];
+          }
+          const newMeta = { ...prev, serviceAreas };
+          persistMetadata(newMeta);
+          return newMeta;
+        });
+      }, [persistMetadata]);
+
+      // Toggle photo selection
+      const toggleSelect = useCallback((photoId) => {
+        setSelectedPhotos(prev => {
+          const next = new Set(prev);
+          next.has(photoId) ? next.delete(photoId) : next.add(photoId);
+          return next;
+        });
+      }, []);
+
+      // Folder navigation helpers
+      const folderNameMap = useRef(new Map());
+
+      const getFolderPath = useCallback((folderId) => {
+        // Walk up from folderNameMap
+        const path = [];
+        let id = folderId;
+        while (id && id !== CONFIG.ROOT_FOLDER_ID) {
+          const name = folderNameMap.current.get(id);
+          if (name) path.unshift({ id, name });
+          // Find parent
+          const findParent = (node, targetId) => {
+            if (!node?.children) return null;
+            for (const child of node.children) {
+              if (child.id === targetId) return node.id;
+              const found = findParent(child, targetId);
+              if (found) return found;
+            }
+            return null;
+          };
+          id = findParent(folderTree, id);
+        }
+        return path;
+      }, [folderTree]);
+
+      const isAdam = user?.email?.toLowerCase().trim() === 'adam@today.design';
+
+      const value = {
+        token, setToken, user, setUser, isAdam,
+        folderTree, setFolderTree, expandedFolders, setExpandedFolders,
+        currentFolderId, setCurrentFolderId, currentFolderName, setCurrentFolderName,
+        photos, setPhotos, allPhotosFlat, setAllPhotosFlat,
+        isLoadingPhotos, setIsLoadingPhotos, isLoadingTree, setIsLoadingTree,
+        loadingStatus, setLoadingStatus,
+        metadata, setMetadata, persistMetadata,
+        favourites, toggleFavourite,
+        myPicks, toggleMyPick,
+        thumbSize, setThumbSize,
+        searchQuery, setSearchQuery,
+        filterPeople, setFilterPeople,
+        filterServiceAreas, setFilterServiceAreas,
+        sortBy, setSortBy, sortOrder, setSortOrder,
+        quickFilter, setQuickFilter,
+        selectedPhotos, setSelectedPhotos, selectMode, setSelectMode, toggleSelect,
+        lightboxIdx, setLightboxIdx,
+        sidebarOpen, setSidebarOpen,
+        tagDialogPhoto, setTagDialogPhoto,
+        toggleAdamSelect, tagPerson, tagServiceArea,
+        zipProgress, setZipProgress,
+        error, setError,
+        folderNameMap, getFolderPath,
+        thumbMap, setThumbMap,
+      };
+
+      return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+    }
+
+    function useApp() { return useContext(AppContext); }
+
+    // ============================================================
+    // SIGN IN SCREEN
+    // ============================================================
+    function SignInScreen() {
+      const { setToken, setUser } = useApp();
+      const [loading, setLoading] = useState(false);
+      const [gsiReady, setGsiReady] = useState(false);
+      const clientRef = useRef(null);
+
+      useEffect(() => {
+        const check = setInterval(() => {
+          if (window.google?.accounts?.oauth2) {
+            clearInterval(check);
+            clientRef.current = google.accounts.oauth2.initTokenClient({
+              client_id: CONFIG.GOOGLE_CLIENT_ID,
+              scope: CONFIG.SCOPES,
+              callback: async (response) => {
+                if (response.access_token) {
+                  setToken(response.access_token);
+                  // Fetch user info via Drive about endpoint (works with drive scope)
+                  try {
+                    const [userRes, driveRes] = await Promise.all([
+                      fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+                        headers: { Authorization: `Bearer ${response.access_token}` }
+                      }).catch(() => null),
+                      fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+                        headers: { Authorization: `Bearer ${response.access_token}` }
+                      }).catch(() => null),
+                    ]);
+                    let data = {};
+                    if (userRes?.ok) data = await userRes.json();
+                    if (driveRes?.ok) {
+                      const driveData = await driveRes.json();
+                      if (driveData.user) {
+                        data.email = data.email || driveData.user.emailAddress;
+                        data.name = data.name || driveData.user.displayName;
+                        data.picture = data.picture || driveData.user.photoLink;
+                      }
+                    }
+                    setUser(data);
+                    LS.set('user', data);
+                  } catch {}
+                }
+                setLoading(false);
+              },
+              error_callback: () => setLoading(false),
+            });
+            setGsiReady(true);
+          }
+        }, 100);
+        return () => clearInterval(check);
+      }, []);
+
+      const handleSignIn = () => {
+        setLoading(true);
+        clientRef.current?.requestAccessToken();
+      };
+
+      const isConfigured = CONFIG.GOOGLE_CLIENT_ID !== 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-6">
+          <div className="w-full max-w-sm">
+            <div className="text-center mb-10">
+              <div className="text-2xl font-semibold tracking-tight mb-1">Today</div>
+              <div className="text-zinc-400 text-sm">Photo Library</div>
+            </div>
+
+            {!isConfigured ? (
+              <div className="bg-white border border-zinc-200 rounded-xl p-6 text-sm text-zinc-600 space-y-3">
+                <p className="font-medium text-zinc-900">Setup required</p>
+                <p>Add your Google Cloud Client ID to the configuration at the top of this file. See the README for step-by-step instructions.</p>
+                <code className="block bg-zinc-50 p-3 rounded-lg text-xs font-mono break-all">
+                  GOOGLE_CLIENT_ID: 'your-id.apps.googleusercontent.com'
+                </code>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <button
+                  onClick={handleSignIn}
+                  disabled={!gsiReady || loading}
+                  className="w-full bg-zinc-900 text-white rounded-xl px-6 py-3 text-sm font-medium hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+                >
+                  {loading ? (
+                    <><Icon name="loader" size={16} /> Connecting...</>
+                  ) : (
+                    <>
+                      <svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                      Sign in with Google
+                    </>
+                  )}
+                </button>
+                <p className="text-center text-xs text-zinc-400">
+                  Connects to Google Drive to browse the photo library
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // FOLDER TREE
+    // ============================================================
+    const HIDDEN_FOLDERS = new Set(['_today_thumbnails']);
+
+    const FolderTreeItem = memo(({ node, depth = 0 }) => {
+      const { expandedFolders, setExpandedFolders, currentFolderId, setCurrentFolderId,
+        setCurrentFolderName, token, folderNameMap, quickFilter, setQuickFilter } = useApp();
+      const isExpanded = expandedFolders.has(node.id);
+      const isActive = currentFolderId === node.id && !quickFilter;
+      const [isLoading, setIsLoading] = useState(false);
+
+      const handleToggle = async (e) => {
+        e.stopPropagation();
+        if (!node.loaded && token) {
+          setIsLoading(true);
+          try {
+            const subs = await loadSubfolders(node.id, token);
+            node.children = subs.map(f => ({ id: f.id, name: f.name, children: [], loaded: false }));
+            node.children.forEach(c => folderNameMap.current.set(c.id, c.name));
+            node.loaded = true;
+          } catch {}
+          setIsLoading(false);
+        }
+        setExpandedFolders(prev => {
+          const next = new Set(prev);
+          next.has(node.id) ? next.delete(node.id) : next.add(node.id);
+          return next;
+        });
+      };
+
+      const handleSelect = async () => {
+        setCurrentFolderId(node.id);
+        setCurrentFolderName(node.name);
+        setQuickFilter(null);
+      };
+
+      return (
+        <div>
+          <div
+            onClick={handleSelect}
+            className={`flex items-center gap-1 py-1.5 px-2 rounded-lg cursor-pointer text-sm select-none group
+              ${isActive ? 'bg-zinc-900 text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
+            style={{ paddingLeft: `${depth * 16 + 8}px` }}
+          >
+            <button
+              onClick={handleToggle}
+              className={`w-5 h-5 flex items-center justify-center flex-shrink-0 rounded
+                ${isActive ? 'text-zinc-300 hover:text-white' : 'text-zinc-400 hover:text-zinc-600'}`}
+            >
+              {isLoading ? <Icon name="loader" size={12} /> :
+                isExpanded ? <Icon name="chevronDown" size={12} /> : <Icon name="chevronRight" size={12} />}
+            </button>
+            <Icon name={isExpanded ? 'folderOpen' : 'folder'} size={15}
+              className={`flex-shrink-0 ${isActive ? 'text-zinc-300' : 'text-zinc-400'}`} />
+            <span className="truncate ml-1">{node.name}</span>
+          </div>
+          {isExpanded && node.children && (
+            <div>
+              {node.children.filter(c => !HIDDEN_FOLDERS.has(c.name)).map(child => (
+                <FolderTreeItem key={child.id} node={child} depth={depth + 1} />
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    });
+
+    function FolderTree() {
+      const { folderTree, quickFilter, setQuickFilter, favourites, myPicks, metadata } = useApp();
+      const favCount = favourites.size;
+      const picksCount = myPicks.size;
+      const selectCount = (metadata.adamSelects || []).length;
+
+      return (
+        <div className="flex flex-col h-full">
+          <div className="p-3 space-y-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 px-2 mb-2">Quick access</div>
+            <button
+              onClick={() => setQuickFilter(quickFilter === 'adamSelects' ? null : 'adamSelects')}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm
+                ${quickFilter === 'adamSelects' ? 'bg-zinc-900 text-white' : 'text-zinc-600 hover:bg-zinc-100'}`}
+            >
+              <Icon name={quickFilter === 'adamSelects' ? 'starFill' : 'star'} size={15}
+                className={quickFilter === 'adamSelects' ? 'text-amber-400' : ''} />
+              <span>Official selects</span>
+              {selectCount > 0 && <span className={`ml-auto text-xs ${quickFilter === 'adamSelects' ? 'text-zinc-400' : 'text-zinc-400'}`}>{selectCount}</span>}
+            </button>
+            <button
+              onClick={() => setQuickFilter(quickFilter === 'favourites' ? null : 'favourites')}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm
+                ${quickFilter === 'favourites' ? 'bg-zinc-900 text-white' : 'text-zinc-600 hover:bg-zinc-100'}`}
+            >
+              <Icon name={quickFilter === 'favourites' ? 'heartFill' : 'heart'} size={15}
+                className={quickFilter === 'favourites' ? 'text-rose-400' : ''} />
+              <span>Studio faves</span>
+              {favCount > 0 && <span className={`ml-auto text-xs ${quickFilter === 'favourites' ? 'text-zinc-400' : 'text-zinc-400'}`}>{favCount}</span>}
+            </button>
+            <button
+              onClick={() => setQuickFilter(quickFilter === 'myPicks' ? null : 'myPicks')}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm
+                ${quickFilter === 'myPicks' ? 'bg-zinc-900 text-white' : 'text-zinc-600 hover:bg-zinc-100'}`}
+            >
+              <Icon name={quickFilter === 'myPicks' ? 'bookmarkFill' : 'bookmark'} size={15}
+                className={quickFilter === 'myPicks' ? 'text-blue-400' : ''} />
+              <span>My picks</span>
+              {picksCount > 0 && <span className={`ml-auto text-xs ${quickFilter === 'myPicks' ? 'text-zinc-400' : 'text-zinc-400'}`}>{picksCount}</span>}
+            </button>
+          </div>
+          <div className="border-t border-zinc-100 p-3 flex-1 overflow-y-auto">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 px-2 mb-2">Folders</div>
+            {folderTree ? (
+              <FolderTreeItem node={folderTree} />
+            ) : (
+              <div className="px-2 py-4 text-xs text-zinc-400">Loading folders...</div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // PHOTO CARD
+    // ============================================================
+    const PhotoCard = memo(({ photo, index, size }) => {
+      const { favourites, toggleFavourite, myPicks, toggleMyPick, metadata, toggleAdamSelect, selectMode,
+        selectedPhotos, toggleSelect, setLightboxIdx, setTagDialogPhoto, token, thumbMap, isAdam } = useApp();
+      const isFav = favourites.has(photo.id);
+      const isPick = myPicks.has(photo.id);
+      const isSelect = (metadata.adamSelects || []).includes(photo.id);
+      const isSelected = selectedPhotos.has(photo.id);
+      const tags = metadata.tags?.[photo.id] || [];
+      const serviceAreaTags = metadata.serviceAreas?.[photo.id] || [];
+      const [loaded, setLoaded] = useState(false);
+      const [urlFailed, setUrlFailed] = useState(false);
+      const [blobSrc, setBlobSrc] = useState(() => thumbBlobCache.get(photo.id) || null);
+      const [totalFailed, setTotalFailed] = useState(false);
+
+      const thumbWidth = Math.min(size * 2, 800);
+      const thumbFileId = thumbMap[photo.id]; // pre-generated thumbnail ID (if exists)
+      const directUrl = getThumbnailUrl(photo, thumbWidth);
+
+      // Strategy:
+      // 1. If pre-generated thumbnail exists → fetch that small file via Drive API (fast, ~30-50KB)
+      // 2. Else try thumbnailLink in <img> tag (no CORS issue for img tags)
+      // 3. If that fails → fallback to full image via Drive API
+      useEffect(() => {
+        // Only use blob fetch if we have a pre-gen thumb, or if the direct URL failed, or if there's no URL
+        const needsBlob = thumbFileId || urlFailed || !directUrl;
+        if (!needsBlob || blobSrc || totalFailed || !token) return;
+        let cancelled = false;
+        const fileToFetch = thumbFileId || photo.id;
+        loadThumbBlob(fileToFetch, token).then(url => {
+          if (cancelled) return;
+          if (url) setBlobSrc(url);
+          else setTotalFailed(true);
+        });
+        return () => { cancelled = true; };
+      }, [thumbFileId, urlFailed, directUrl, blobSrc, totalFailed, token, photo.id]);
+
+      const imgSrc = blobSrc || directUrl;
+      const showImage = imgSrc && !totalFailed;
+
+      return (
+        <div
+          className={`photo-enter group relative rounded-xl overflow-hidden bg-zinc-100 cursor-pointer
+            ${isSelected ? 'ring-2 ring-blue-500 ring-offset-2' : ''}`}
+          style={{ aspectRatio: '1' }}
+          onClick={() => {
+            if (selectMode) { toggleSelect(photo.id); }
+            else { setLightboxIdx(index); }
+          }}
+        >
+          {/* Image */}
+          {showImage ? (
+            <img
+              src={imgSrc}
+              alt={photo.name}
+              loading="lazy"
+              onLoad={() => { setLoaded(true); setUrlFailed(false); }}
+              onError={() => {
+                if (!blobSrc) setUrlFailed(true);
+                else setTotalFailed(true);
+              }}
+              className={`w-full h-full object-cover transition-opacity duration-300
+                ${loaded ? 'opacity-100' : 'opacity-0'}`}
+            />
+          ) : totalFailed ? (
+            <div className="w-full h-full flex items-center justify-center text-zinc-300">
+              <Icon name="image" size={32} />
+            </div>
+          ) : null}
+
+          {/* Loading shimmer */}
+          {!loaded && !totalFailed && (
+            <div className="absolute inset-0 shimmer-loading" />
+          )}
+
+          {/* Hover overlay */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+          {/* Selection checkbox */}
+          {selectMode && (
+            <div className={`absolute top-2 left-2 w-6 h-6 rounded-md flex items-center justify-center
+              ${isSelected ? 'bg-blue-500 text-white check-bounce' : 'bg-white/80 border border-zinc-300 text-transparent hover:border-blue-400'}`}
+              onClick={(e) => { e.stopPropagation(); toggleSelect(photo.id); }}>
+              <Icon name="check" size={14} strokeWidth={2.5} />
+            </div>
+          )}
+
+          {/* Action buttons (top right) */}
+          <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {isAdam && (
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleAdamSelect(photo.id); }}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center backdrop-blur-sm transition-colors
+                  ${isSelect ? 'bg-amber-400 text-white' : 'bg-black/30 text-white hover:bg-black/50'}`}
+                title="Official select"
+              >
+                <Icon name={isSelect ? 'starFill' : 'star'} size={14} />
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleFavourite(photo.id); }}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center backdrop-blur-sm transition-colors
+                ${isFav ? 'bg-rose-400 text-white' : 'bg-black/30 text-white hover:bg-black/50'}`}
+              title="Studio fave"
+            >
+              <Icon name={isFav ? 'heartFill' : 'heart'} size={14} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleMyPick(photo.id); }}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center backdrop-blur-sm transition-colors
+                ${isPick ? 'bg-blue-400 text-white' : 'bg-black/30 text-white hover:bg-black/50'}`}
+              title="My pick"
+            >
+              <Icon name={isPick ? 'bookmarkFill' : 'bookmark'} size={14} />
+            </button>
+          </div>
+
+          {/* Bottom info on hover */}
+          <div className="absolute bottom-0 left-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity
+            bg-gradient-to-t from-black/50 to-transparent">
+            <div className="flex gap-1.5 flex-wrap items-center">
+              {photo.createdTime && (
+                <span className="text-[10px] bg-black/40 backdrop-blur-sm text-white px-1.5 py-0.5 rounded-full">
+                  {new Date(photo.createdTime).getFullYear()}
+                </span>
+              )}
+              {tags.map(t => (
+                <span key={t} className="text-[10px] bg-white/20 backdrop-blur-sm text-white px-1.5 py-0.5 rounded-full">{t}</span>
+              ))}
+              {serviceAreaTags.map(a => (
+                <span key={a} className="text-[10px] bg-emerald-500/30 backdrop-blur-sm text-emerald-100 px-1.5 py-0.5 rounded-full">{a}</span>
+              ))}
+            </div>
+          </div>
+
+          {/* Badges (always visible) */}
+          <div className="absolute top-2 left-2 flex gap-1">
+            {!selectMode && isSelect && (
+              <div className="w-5 h-5 rounded-full bg-amber-400 text-white flex items-center justify-center shadow-sm">
+                <Icon name="starFill" size={10} />
+              </div>
+            )}
+            {!selectMode && isFav && (
+              <div className="w-5 h-5 rounded-full bg-rose-400 text-white flex items-center justify-center shadow-sm">
+                <Icon name="heartFill" size={10} />
+              </div>
+            )}
+            {!selectMode && isPick && (
+              <div className="w-5 h-5 rounded-full bg-blue-400 text-white flex items-center justify-center shadow-sm">
+                <Icon name="bookmarkFill" size={10} />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    });
+
+    // ============================================================
+    // PHOTO GRID
+    // ============================================================
+    function PhotoGrid() {
+      const { photos, thumbSize, isLoadingPhotos, loadingStatus, searchQuery, filterPeople,
+        filterServiceAreas, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata, currentFolderName } = useApp();
+
+      const filteredPhotos = useMemo(() => {
+        let result = [...photos];
+
+        // Quick filters
+        if (quickFilter === 'favourites') {
+          result = result.filter(p => favourites.has(p.id));
+        } else if (quickFilter === 'adamSelects') {
+          result = result.filter(p => (metadata.adamSelects || []).includes(p.id));
+        } else if (quickFilter === 'myPicks') {
+          result = result.filter(p => myPicks.has(p.id));
+        }
+
+        // Search
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          result = result.filter(p => {
+            const tags = (metadata.tags?.[p.id] || []).join(' ').toLowerCase();
+            return p.name.toLowerCase().includes(q) || tags.includes(q);
+          });
+        }
+
+        // People filter
+        if (filterPeople.length > 0) {
+          result = result.filter(p => {
+            const tags = metadata.tags?.[p.id] || [];
+            return filterPeople.some(person => tags.includes(person));
+          });
+        }
+
+        // Service area filter
+        if (filterServiceAreas.length > 0) {
+          result = result.filter(p => {
+            const areas = metadata.serviceAreas?.[p.id] || [];
+            return filterServiceAreas.some(area => areas.includes(area));
+          });
+        }
+
+        // Sort
+        result.sort((a, b) => {
+          let cmp = 0;
+          if (sortBy === 'name') cmp = a.name.localeCompare(b.name);
+          else if (sortBy === 'date') cmp = new Date(a.createdTime || 0) - new Date(b.createdTime || 0);
+          else if (sortBy === 'size') cmp = (a.size || 0) - (b.size || 0);
+          return sortOrder === 'desc' ? -cmp : cmp;
+        });
+
+        return result;
+      }, [photos, searchQuery, filterPeople, filterServiceAreas, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata]);
+
+      if (isLoadingPhotos) {
+        return (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center text-zinc-400">
+              <Icon name="loader" size={24} className="mx-auto mb-2" />
+              <div className="text-sm">{loadingStatus || 'Loading photos...'}</div>
+            </div>
+          </div>
+        );
+      }
+
+      if (photos.length === 0) {
+        return (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center text-zinc-400">
+              <Icon name="image" size={32} className="mx-auto mb-3 text-zinc-300" />
+              <div className="text-sm font-medium text-zinc-500">No images in this folder</div>
+              <div className="text-xs mt-1">Select a folder from the sidebar</div>
+            </div>
+          </div>
+        );
+      }
+
+      if (filteredPhotos.length === 0) {
+        return (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center text-zinc-400">
+              <Icon name="search" size={32} className="mx-auto mb-3 text-zinc-300" />
+              <div className="text-sm font-medium text-zinc-500">No matching photos</div>
+              <div className="text-xs mt-1">Try adjusting your search or filters</div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="text-xs text-zinc-400 mb-3">
+            {filteredPhotos.length} {filteredPhotos.length === 1 ? 'photo' : 'photos'}
+            {quickFilter === 'favourites' && ' in studio faves'}
+            {quickFilter === 'adamSelects' && " in Official selects"}
+            {quickFilter === 'myPicks' && ' in my picks'}
+            {searchQuery && ` matching "${searchQuery}"`}
+          </div>
+          <div
+            className="grid gap-2"
+            style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbSize}px, 1fr))` }}
+          >
+            {filteredPhotos.map((photo, i) => (
+              <PhotoCard key={photo.id} photo={photo} index={i} size={thumbSize} />
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // LIGHTBOX
+    // ============================================================
+    function Lightbox() {
+      const { lightboxIdx, setLightboxIdx, photos, favourites, toggleFavourite,
+        myPicks, toggleMyPick, metadata, toggleAdamSelect, setTagDialogPhoto, searchQuery, filterPeople,
+        filterServiceAreas, sortBy, sortOrder, quickFilter, token, isAdam } = useApp();
+
+      const [imgLoaded, setImgLoaded] = useState(false);
+      const [imgError, setImgError] = useState(false);
+      const [blobUrl, setBlobUrl] = useState(null);
+
+      // Use the same filtered list as the grid
+      const filteredPhotos = useMemo(() => {
+        let result = [...photos];
+        if (quickFilter === 'favourites') result = result.filter(p => favourites.has(p.id));
+        else if (quickFilter === 'adamSelects') result = result.filter(p => (metadata.adamSelects || []).includes(p.id));
+        else if (quickFilter === 'myPicks') result = result.filter(p => myPicks.has(p.id));
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          result = result.filter(p => {
+            const tags = (metadata.tags?.[p.id] || []).join(' ').toLowerCase();
+            return p.name.toLowerCase().includes(q) || tags.includes(q);
+          });
+        }
+        if (filterPeople.length > 0) {
+          result = result.filter(p => {
+            const tags = metadata.tags?.[p.id] || [];
+            return filterPeople.some(person => tags.includes(person));
+          });
+        }
+        if (filterServiceAreas.length > 0) {
+          result = result.filter(p => {
+            const areas = metadata.serviceAreas?.[p.id] || [];
+            return filterServiceAreas.some(area => areas.includes(area));
+          });
+        }
+        result.sort((a, b) => {
+          let cmp = 0;
+          if (sortBy === 'name') cmp = a.name.localeCompare(b.name);
+          else if (sortBy === 'date') cmp = new Date(a.createdTime || 0) - new Date(b.createdTime || 0);
+          return sortOrder === 'desc' ? -cmp : cmp;
+        });
+        return result;
+      }, [photos, searchQuery, filterPeople, filterServiceAreas, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata]);
+
+      const isOpen = lightboxIdx >= 0 && lightboxIdx < filteredPhotos.length;
+      const photo = isOpen ? filteredPhotos[lightboxIdx] : null;
+      const isFav = photo ? favourites.has(photo.id) : false;
+      const isPick = photo ? myPicks.has(photo.id) : false;
+      const isSelect = photo ? (metadata.adamSelects || []).includes(photo.id) : false;
+      const tags = photo ? (metadata.tags?.[photo.id] || []) : [];
+      const serviceAreas = photo ? (metadata.serviceAreas?.[photo.id] || []) : [];
+      const hasPrev = lightboxIdx > 0;
+      const hasNext = lightboxIdx < filteredPhotos.length - 1;
+
+      // Fetch full image via Drive API when photo changes
+      useEffect(() => {
+        setImgLoaded(false);
+        setImgError(false);
+        if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
+
+        if (!photo || !token) return;
+        let cancelled = false;
+
+        fetch(`https://www.googleapis.com/drive/v3/files/${photo.id}?alt=media`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+        .then(res => {
+          if (!res.ok) throw new Error('Failed to load');
+          return res.blob();
+        })
+        .then(blob => {
+          if (!cancelled) {
+            const url = URL.createObjectURL(blob);
+            setBlobUrl(url);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setImgError(true);
+        });
+
+        return () => { cancelled = true; };
+      }, [lightboxIdx, token]);
+
+      // Browser back button support
+      useEffect(() => {
+        if (isOpen) {
+          window.history.pushState({ lightbox: true }, '');
+          const onPop = () => setLightboxIdx(-1);
+          window.addEventListener('popstate', onPop);
+          return () => window.removeEventListener('popstate', onPop);
+        }
+      }, [isOpen]);
+
+      const closeLightbox = useCallback(() => {
+        if (window.history.state?.lightbox) window.history.back();
+        else setLightboxIdx(-1);
+      }, []);
+
+      // Keyboard navigation — ALL hooks must be above the early return
+      const handleKeyDown = useCallback((e) => {
+        if (!isOpen) return;
+        if (e.key === 'Escape') closeLightbox();
+        if (e.key === 'ArrowLeft' && hasPrev) setLightboxIdx(lightboxIdx - 1);
+        if (e.key === 'ArrowRight' && hasNext) setLightboxIdx(lightboxIdx + 1);
+      }, [isOpen, lightboxIdx, hasPrev, hasNext, closeLightbox]);
+
+      useEffect(() => {
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+      }, [handleKeyDown]);
+
+      // Early return AFTER all hooks
+      if (!isOpen || !photo) return null;
+
+      return (
+        <div className="fixed inset-0 z-50 bg-black/95 flex flex-col" onClick={closeLightbox}>
+          {/* Top bar */}
+          <div className="flex items-center justify-between p-4 text-white" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 min-w-0">
+              <button onClick={closeLightbox} className="hover:bg-white/10 p-2 rounded-lg transition-colors">
+                <Icon name="x" size={20} />
+              </button>
+              <div className="min-w-0">
+                <div className="text-sm font-medium truncate">{photo.name}</div>
+                <div className="text-xs text-zinc-400 flex items-center gap-3">
+                  {formatDate(photo.createdTime)}
+                  {photo.size && <span>{formatFileSize(photo.size)}</span>}
+                  {photo.imageMediaMetadata && (
+                    <span>{photo.imageMediaMetadata.width} × {photo.imageMediaMetadata.height}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              {(tags.length > 0 || serviceAreas.length > 0) && (
+                <div className="flex gap-1 mr-3 flex-wrap">
+                  {tags.map(t => (
+                    <span key={t} className="text-xs bg-white/10 text-zinc-300 px-2 py-1 rounded-full">{t}</span>
+                  ))}
+                  {serviceAreas.map(a => (
+                    <span key={a} className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-1 rounded-full">{a}</span>
+                  ))}
+                </div>
+              )}
+              <button onClick={() => setTagDialogPhoto(photo)} className="hover:bg-white/10 p-2 rounded-lg transition-colors text-zinc-300 hover:text-white" title="Tag photo">
+                <Icon name="tag" size={18} />
+              </button>
+              {isAdam && (
+                <button onClick={() => toggleAdamSelect(photo.id)}
+                  className={`p-2 rounded-lg transition-colors ${isSelect ? 'text-amber-400 bg-amber-400/10' : 'text-zinc-300 hover:text-white hover:bg-white/10'}`}
+                  title="Official select">
+                  <Icon name={isSelect ? 'starFill' : 'star'} size={18} />
+                </button>
+              )}
+              <button onClick={() => toggleFavourite(photo.id)}
+                className={`p-2 rounded-lg transition-colors ${isFav ? 'text-rose-400 bg-rose-400/10' : 'text-zinc-300 hover:text-white hover:bg-white/10'}`}
+                title="Studio fave">
+                <Icon name={isFav ? 'heartFill' : 'heart'} size={18} />
+              </button>
+              <button onClick={() => toggleMyPick(photo.id)}
+                className={`p-2 rounded-lg transition-colors ${isPick ? 'text-blue-400 bg-blue-400/10' : 'text-zinc-300 hover:text-white hover:bg-white/10'}`}
+                title="My pick">
+                <Icon name={isPick ? 'bookmarkFill' : 'bookmark'} size={18} />
+              </button>
+              <a href={getDriveUrl(photo.id)} target="_blank" rel="noopener"
+                className="hover:bg-white/10 p-2 rounded-lg transition-colors text-zinc-300 hover:text-white" title="Open in Google Drive">
+                <Icon name="externalLink" size={18} />
+              </a>
+              <a href={`https://drive.google.com/uc?export=download&id=${photo.id}`} target="_blank" rel="noopener"
+                className="hover:bg-white/10 p-2 rounded-lg transition-colors text-zinc-300 hover:text-white" title="Download original">
+                <Icon name="download" size={18} />
+              </a>
+            </div>
+          </div>
+
+          {/* Image area */}
+          <div className="flex-1 flex items-center justify-center relative min-h-0 px-16">
+            {/* Loading spinner */}
+            {!imgLoaded && !imgError && (
+              <div className="absolute inset-0 flex items-center justify-center text-zinc-500">
+                <Icon name="loader" size={28} />
+              </div>
+            )}
+            {/* Error state */}
+            {imgError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500 gap-3">
+                <Icon name="image" size={40} />
+                <div className="text-sm">Image couldn't be loaded</div>
+                <a href={getDriveUrl(photo.id)} target="_blank" rel="noopener"
+                  className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                  Open in Google Drive <Icon name="externalLink" size={14} />
+                </a>
+              </div>
+            )}
+            {blobUrl && (
+              <img
+                src={blobUrl}
+                alt={photo.name}
+                onLoad={() => setImgLoaded(true)}
+                onError={() => setImgError(true)}
+                className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-opacity duration-300
+                  ${imgLoaded ? 'opacity-100' : 'opacity-0'}`}
+                onClick={e => e.stopPropagation()}
+              />
+            )}
+            {/* Nav arrows */}
+            {hasPrev && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setLightboxIdx(lightboxIdx - 1); }}
+                className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/40 hover:bg-black/60 text-white flex items-center justify-center transition-colors backdrop-blur-sm"
+              >
+                <Icon name="arrowLeft" size={20} />
+              </button>
+            )}
+            {hasNext && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setLightboxIdx(lightboxIdx + 1); }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/40 hover:bg-black/60 text-white flex items-center justify-center transition-colors backdrop-blur-sm"
+              >
+                <Icon name="arrowRight" size={20} />
+              </button>
+            )}
+          </div>
+
+          {/* Bottom counter */}
+          <div className="text-center py-3 text-xs text-zinc-500">
+            {lightboxIdx + 1} of {filteredPhotos.length}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // TAG DIALOG
+    // ============================================================
+    function TagDialog() {
+      const { tagDialogPhoto, setTagDialogPhoto, metadata, tagPerson, tagServiceArea } = useApp();
+      const [search, setSearch] = useState('');
+      const [activeTab, setActiveTab] = useState('people');
+
+      if (!tagDialogPhoto) return null;
+
+      const currentPeopleTags = metadata.tags?.[tagDialogPhoto.id] || [];
+      const currentServiceTags = metadata.serviceAreas?.[tagDialogPhoto.id] || [];
+      const filteredMembers = TEAM_MEMBERS.filter(m =>
+        m.toLowerCase().includes(search.toLowerCase()) && !currentPeopleTags.includes(m)
+      );
+
+      return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => { setTagDialogPhoto(null); setSearch(''); setActiveTab('people'); }}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 overflow-hidden"
+            onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-zinc-100">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold">Tag photo</h3>
+                <button onClick={() => { setTagDialogPhoto(null); setSearch(''); setActiveTab('people'); }}
+                  className="text-zinc-400 hover:text-zinc-600 p-1 rounded-lg hover:bg-zinc-100">
+                  <Icon name="x" size={16} />
+                </button>
+              </div>
+              <div className="text-xs text-zinc-400 truncate mb-3">{tagDialogPhoto.name}</div>
+
+              {/* Tabs */}
+              <div className="flex gap-1 bg-zinc-100 rounded-lg p-0.5 mb-3">
+                <button onClick={() => { setActiveTab('people'); setSearch(''); }}
+                  className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors
+                    ${activeTab === 'people' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
+                  People {currentPeopleTags.length > 0 ? `(${currentPeopleTags.length})` : ''}
+                </button>
+                <button onClick={() => { setActiveTab('service'); setSearch(''); }}
+                  className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors
+                    ${activeTab === 'service' ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
+                  Service area {currentServiceTags.length > 0 ? `(${currentServiceTags.length})` : ''}
+                </button>
+              </div>
+
+              {/* People tab */}
+              {activeTab === 'people' && (
+                <>
+                  {currentPeopleTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {currentPeopleTags.map(t => (
+                        <span key={t} className="inline-flex items-center gap-1 text-xs bg-zinc-100 text-zinc-700 px-2 py-1 rounded-full">
+                          {t}
+                          <button onClick={() => tagPerson(tagDialogPhoto.id, t, true)} className="text-zinc-400 hover:text-zinc-600">
+                            <Icon name="x" size={12} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="relative">
+                    <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                    <input
+                      type="text"
+                      placeholder="Search team members..."
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-sm bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                      autoFocus
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Service area tab — current tags */}
+              {activeTab === 'service' && currentServiceTags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {currentServiceTags.map(t => (
+                    <span key={t} className="inline-flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full">
+                      {t}
+                      <button onClick={() => tagServiceArea(tagDialogPhoto.id, t, true)} className="text-emerald-400 hover:text-emerald-600">
+                        <Icon name="x" size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="max-h-48 overflow-y-auto p-2">
+              {activeTab === 'people' ? (
+                filteredMembers.length === 0 ? (
+                  <div className="text-xs text-zinc-400 text-center py-4">
+                    {search ? 'No matching team members' : 'All team members tagged'}
+                  </div>
+                ) : (
+                  filteredMembers.map(member => (
+                    <button
+                      key={member}
+                      onClick={() => { tagPerson(tagDialogPhoto.id, member); setSearch(''); }}
+                      className="w-full text-left px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50 rounded-lg transition-colors"
+                    >
+                      {member}
+                    </button>
+                  ))
+                )
+              ) : (
+                SERVICE_AREAS.map(area => {
+                  const active = currentServiceTags.includes(area);
+                  return (
+                    <button
+                      key={area}
+                      onClick={() => tagServiceArea(tagDialogPhoto.id, area, active)}
+                      className={`w-full text-left flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors
+                        ${active ? 'bg-emerald-50 text-emerald-700' : 'text-zinc-700 hover:bg-zinc-50'}`}
+                    >
+                      <div className={`w-4 h-4 rounded border flex items-center justify-center
+                        ${active ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-zinc-300'}`}>
+                        {active && <Icon name="check" size={10} strokeWidth={3} />}
+                      </div>
+                      {area}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // TOOLBAR
+    // ============================================================
+    function Toolbar() {
+      const { searchQuery, setSearchQuery, thumbSize, setThumbSize, selectMode, setSelectMode,
+        selectedPhotos, setSelectedPhotos, photos, filterPeople, setFilterPeople,
+        filterServiceAreas, setFilterServiceAreas,
+        sortBy, setSortBy, sortOrder, setSortOrder, token, setZipProgress, zipProgress,
+        currentFolderName, sidebarOpen, setSidebarOpen, quickFilter } = useApp();
+
+      const [showFilterMenu, setShowFilterMenu] = useState(false);
+      const [showServiceFilterMenu, setShowServiceFilterMenu] = useState(false);
+      const [showSortMenu, setShowSortMenu] = useState(false);
+      const [peopleSearch, setPeopleSearch] = useState('');
+      const filterRef = useRef(null);
+      const serviceFilterRef = useRef(null);
+      const sortRef = useRef(null);
+
+      // Close dropdowns on outside click
+      useEffect(() => {
+        const handler = (e) => {
+          if (filterRef.current && !filterRef.current.contains(e.target)) setShowFilterMenu(false);
+          if (serviceFilterRef.current && !serviceFilterRef.current.contains(e.target)) setShowServiceFilterMenu(false);
+          if (sortRef.current && !sortRef.current.contains(e.target)) setShowSortMenu(false);
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+      }, []);
+
+      const handleDownloadZip = async () => {
+        if (selectedPhotos.size === 0 || !token) return;
+        setZipProgress({ current: 0, total: selectedPhotos.size });
+        try {
+          const zip = new JSZip();
+          let i = 0;
+          for (const id of selectedPhotos) {
+            const photo = photos.find(p => p.id === id);
+            if (!photo) continue;
+            const blob = await downloadFileBlob(id, token);
+            zip.file(photo.name, blob);
+            i++;
+            setZipProgress({ current: i, total: selectedPhotos.size });
+          }
+          const zipBlob = await zip.generateAsync({ type: 'blob' });
+          const url = URL.createObjectURL(zipBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `today-photos-${new Date().toISOString().slice(0,10)}.zip`;
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.error('Zip download failed:', e);
+        }
+        setZipProgress(null);
+      };
+
+      const selectAll = () => {
+        setSelectedPhotos(new Set(photos.map(p => p.id)));
+      };
+
+      const title = quickFilter === 'favourites' ? 'Studio faves' :
+        quickFilter === 'adamSelects' ? "Official selects" :
+        quickFilter === 'myPicks' ? 'My picks' : currentFolderName;
+
+      return (
+        <div className="border-b border-zinc-200 bg-white">
+          {/* Title bar */}
+          <div className="flex items-center gap-3 px-4 py-3">
+            {!sidebarOpen && (
+              <button onClick={() => setSidebarOpen(true)}
+                className="text-zinc-400 hover:text-zinc-600 p-1 rounded-lg hover:bg-zinc-100">
+                <Icon name="sidebar" size={18} />
+              </button>
+            )}
+            <h1 className="text-lg font-semibold truncate">{title}</h1>
+          </div>
+
+          {/* Controls */}
+          <div className="flex items-center gap-2 px-4 pb-3 flex-wrap">
+            {/* Search */}
+            <div className="relative flex-1 min-w-[200px] max-w-md">
+              <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+              <input
+                type="text"
+                placeholder="Search photos..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-300 focus:bg-white"
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600">
+                  <Icon name="x" size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* People filter */}
+            <div className="relative" ref={filterRef}>
+              <button
+                onClick={() => setShowFilterMenu(!showFilterMenu)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-lg transition-colors
+                  ${filterPeople.length > 0 ? 'bg-zinc-900 text-white border-zinc-900' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
+              >
+                <Icon name="users" size={14} />
+                <span>People{filterPeople.length > 0 ? ` (${filterPeople.length})` : ''}</span>
+              </button>
+              {showFilterMenu && (
+                <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-zinc-200 rounded-xl shadow-lg z-20 overflow-hidden">
+                  <div className="p-2">
+                    <input
+                      type="text"
+                      placeholder="Search..."
+                      value={peopleSearch}
+                      onChange={e => setPeopleSearch(e.target.value)}
+                      className="w-full px-3 py-1.5 text-sm bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-300"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto p-1">
+                    {TEAM_MEMBERS.filter(m => m.toLowerCase().includes(peopleSearch.toLowerCase())).map(member => {
+                      const active = filterPeople.includes(member);
+                      return (
+                        <button key={member}
+                          onClick={() => setFilterPeople(prev => active ? prev.filter(p => p !== member) : [...prev, member])}
+                          className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors
+                            ${active ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-600 hover:bg-zinc-50'}`}>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center
+                            ${active ? 'bg-zinc-900 border-zinc-900 text-white' : 'border-zinc-300'}`}>
+                            {active && <Icon name="check" size={10} strokeWidth={3} />}
+                          </div>
+                          {member}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {filterPeople.length > 0 && (
+                    <div className="p-2 border-t border-zinc-100">
+                      <button onClick={() => setFilterPeople([])}
+                        className="w-full text-xs text-zinc-500 hover:text-zinc-700 py-1">
+                        Clear all
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Service area filter */}
+            <div className="relative" ref={serviceFilterRef}>
+              <button
+                onClick={() => setShowServiceFilterMenu(!showServiceFilterMenu)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-lg transition-colors
+                  ${filterServiceAreas.length > 0 ? 'bg-emerald-700 text-white border-emerald-700' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
+              >
+                <Icon name="tag" size={14} />
+                <span>Service{filterServiceAreas.length > 0 ? ` (${filterServiceAreas.length})` : ''}</span>
+              </button>
+              {showServiceFilterMenu && (
+                <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-zinc-200 rounded-xl shadow-lg z-20 overflow-hidden">
+                  <div className="p-1">
+                    {SERVICE_AREAS.map(area => {
+                      const active = filterServiceAreas.includes(area);
+                      return (
+                        <button key={area}
+                          onClick={() => setFilterServiceAreas(prev => active ? prev.filter(a => a !== area) : [...prev, area])}
+                          className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg transition-colors
+                            ${active ? 'bg-emerald-50 text-emerald-800' : 'text-zinc-600 hover:bg-zinc-50'}`}>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center
+                            ${active ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-zinc-300'}`}>
+                            {active && <Icon name="check" size={10} strokeWidth={3} />}
+                          </div>
+                          {area}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {filterServiceAreas.length > 0 && (
+                    <div className="p-2 border-t border-zinc-100">
+                      <button onClick={() => setFilterServiceAreas([])}
+                        className="w-full text-xs text-zinc-500 hover:text-zinc-700 py-1">
+                        Clear all
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Sort */}
+            <div className="relative" ref={sortRef}>
+              <button
+                onClick={() => setShowSortMenu(!showSortMenu)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-lg"
+              >
+                <Icon name="sortAsc" size={14} />
+                <span className="capitalize">{sortBy}</span>
+              </button>
+              {showSortMenu && (
+                <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-zinc-200 rounded-xl shadow-lg z-20 p-1">
+                  {['name', 'date', 'size'].map(s => (
+                    <button key={s} onClick={() => {
+                      if (sortBy === s) setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                      else { setSortBy(s); setSortOrder('asc'); }
+                      setShowSortMenu(false);
+                    }}
+                      className={`w-full text-left px-3 py-2 text-sm rounded-lg transition-colors flex items-center justify-between
+                        ${sortBy === s ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-600 hover:bg-zinc-50'}`}>
+                      <span className="capitalize">{s}</span>
+                      {sortBy === s && <span className="text-xs text-zinc-400">{sortOrder === 'asc' ? '↑' : '↓'}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="h-5 w-px bg-zinc-200 mx-1" />
+
+            {/* Thumbnail size slider */}
+            <div className="flex items-center gap-2">
+              <Icon name="image" size={12} className="text-zinc-400" />
+              <input
+                type="range"
+                min="100"
+                max="400"
+                value={thumbSize}
+                onChange={e => setThumbSize(Number(e.target.value))}
+                className="w-24"
+              />
+              <Icon name="image" size={18} className="text-zinc-400" />
+            </div>
+
+            <div className="h-5 w-px bg-zinc-200 mx-1" />
+
+            {/* Select mode */}
+            <button
+              onClick={() => { setSelectMode(!selectMode); if (selectMode) setSelectedPhotos(new Set()); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-lg transition-colors
+                ${selectMode ? 'bg-blue-500 text-white border-blue-500' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
+            >
+              <Icon name="checkSquare" size={14} />
+              <span>{selectMode ? 'Cancel' : 'Select'}</span>
+            </button>
+
+            {/* Batch actions */}
+            {selectMode && selectedPhotos.size > 0 && (
+              <>
+                <button onClick={selectAll}
+                  className="px-3 py-1.5 text-sm border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-lg">
+                  Select all
+                </button>
+                <button
+                  onClick={handleDownloadZip}
+                  disabled={zipProgress !== null}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-zinc-900 text-white rounded-lg hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  <Icon name="download" size={14} />
+                  {zipProgress
+                    ? `Downloading ${zipProgress.current}/${zipProgress.total}...`
+                    : `Download ${selectedPhotos.size} as ZIP`}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // MAIN APP
+    // ============================================================
+    function MainApp() {
+      const { token, user, setToken, setUser, folderTree, setFolderTree, setExpandedFolders,
+        currentFolderId, setPhotos, setAllPhotosFlat, setIsLoadingPhotos, setIsLoadingTree, isLoadingTree,
+        setLoadingStatus, metadata, setMetadata, sidebarOpen, setSidebarOpen, folderNameMap,
+        quickFilter, setCurrentFolderName, setError, error, thumbMap, setThumbMap } = useApp();
+
+      // Thumbnail generation state
+      const [thumbGenActive, setThumbGenActive] = useState(false);
+      const [thumbGenProgress, setThumbGenProgress] = useState(null);
+
+      const runThumbGen = useCallback(async () => {
+        if (thumbGenActive || !token) return;
+        setThumbGenActive(true);
+        setThumbGenProgress({ current: 0, total: 0, created: 0, failed: 0, name: 'Scanning folders...' });
+        try {
+          // Always scan from root to get ALL images
+          const allImages = await loadImagesRecursive(CONFIG.ROOT_FOLDER_ID, token, () => {});
+          if (allImages.length === 0) {
+            setThumbGenProgress({ current: 0, total: 0, created: 0, failed: 0, done: true });
+            setThumbGenActive(false);
+            return;
+          }
+          const result = await generateThumbnails(allImages, thumbMap, token, (p) => {
+            setThumbGenProgress(p);
+          });
+          setThumbMap(result.map);
+        } catch (err) {
+          console.error('Thumbnail generation failed:', err);
+        }
+        setThumbGenActive(false);
+      }, [thumbGenActive, token, thumbMap]);
+
+      // Load folder tree on mount
+      useEffect(() => {
+        if (!token) return;
+        let cancelled = false;
+
+        async function init() {
+          setIsLoadingTree(true);
+          try {
+            // Load metadata and thumbnail map in parallel
+            const [meta, tMap] = await Promise.all([
+              loadMetadata(token),
+              loadThumbMap(token),
+            ]);
+            if (!cancelled) {
+              setMetadata(meta);
+              setThumbMap(tMap);
+            }
+
+            // Load root folder info
+            const rootInfo = await driveApiFetch(`/files/${CONFIG.ROOT_FOLDER_ID}?fields=name`, token);
+            const rootName = rootInfo.name || 'Photo Library';
+
+            // Load first level of folders
+            const subs = await loadSubfolders(CONFIG.ROOT_FOLDER_ID, token);
+            const tree = {
+              id: CONFIG.ROOT_FOLDER_ID,
+              name: rootName,
+              children: subs.map(f => ({ id: f.id, name: f.name, children: [], loaded: false })),
+              loaded: true
+            };
+            tree.children.forEach(c => folderNameMap.current.set(c.id, c.name));
+            folderNameMap.current.set(CONFIG.ROOT_FOLDER_ID, rootName);
+
+            if (!cancelled) {
+              setFolderTree(tree);
+              setCurrentFolderName(rootName);
+            }
+          } catch (e) {
+            if (!cancelled) setError(e.message);
+          }
+          if (!cancelled) setIsLoadingTree(false);
+        }
+        init();
+        return () => { cancelled = true; };
+      }, [token]);
+
+      // Load photos — either by ID for quick filters, or via folder scan
+      const folderPhotosCache = useRef({}); // cache folder scans: { folderId: [photos] }
+      useEffect(() => {
+        if (!token) return;
+        let cancelled = false;
+
+        // Quick filter active → fetch those specific photos by ID
+        if (quickFilter) {
+          let ids = [];
+          if (quickFilter === 'adamSelects') ids = metadata.adamSelects || [];
+          else if (quickFilter === 'favourites') ids = metadata.favourites || [];
+          else if (quickFilter === 'myPicks' && user?.email) ids = metadata.personalPicks?.[user.email] || [];
+
+          if (ids.length === 0) {
+            setPhotos([]);
+            setIsLoadingPhotos(false);
+            setLoadingStatus('');
+            return;
+          }
+
+          setIsLoadingPhotos(true);
+          setLoadingStatus(`Loading ${ids.length} photos...`);
+
+          fetchFilesByIds(ids, token).then(files => {
+            if (!cancelled) {
+              setPhotos(files);
+              setLoadingStatus('');
+              setIsLoadingPhotos(false);
+            }
+          }).catch(() => {
+            if (!cancelled) setIsLoadingPhotos(false);
+          });
+
+          return () => { cancelled = true; };
+        }
+
+        // No quick filter → load from folder (recursive scan)
+        if (!currentFolderId) return;
+
+        // Use cache if available
+        if (folderPhotosCache.current[currentFolderId]) {
+          setPhotos(folderPhotosCache.current[currentFolderId]);
+          return;
+        }
+
+        let foundCount = 0;
+        setIsLoadingPhotos(true);
+        setLoadingStatus('Scanning folders...');
+
+        loadImagesRecursive(currentFolderId, token, (imgCount) => {
+          foundCount += imgCount;
+          if (!cancelled) setLoadingStatus(`Found ${foundCount} photos so far...`);
+        }).then(images => {
+          if (!cancelled) {
+            folderPhotosCache.current[currentFolderId] = images;
+            setPhotos(images);
+            setLoadingStatus('');
+            setIsLoadingPhotos(false);
+          }
+        }).catch(e => {
+          if (!cancelled) {
+            setError(e.message);
+            setIsLoadingPhotos(false);
+          }
+        });
+
+        return () => { cancelled = true; };
+      }, [token, currentFolderId, quickFilter, metadata]);
+
+      const handleSignOut = () => {
+        const t = token;
+        setToken(null);
+        setUser(null);
+        LS.set('user', null);
+        try { google.accounts.oauth2.revoke(t); } catch {}
+      };
+
+      return (
+        <div className="h-screen flex flex-col bg-white">
+          {/* Header */}
+          <header className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-200 bg-white flex-shrink-0">
+            <div className="flex items-center gap-3">
+              <button onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="text-zinc-400 hover:text-zinc-600 p-1.5 rounded-lg hover:bg-zinc-100 transition-colors">
+                <Icon name="sidebar" size={18} />
+              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold tracking-tight">Today</span>
+                <span className="text-zinc-300">|</span>
+                <span className="text-sm text-zinc-500">Photo Library</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {user && (
+                <div className="flex items-center gap-2">
+                  {user.picture ? (
+                    <img src={user.picture} alt="" className="w-7 h-7 rounded-full" referrerPolicy="no-referrer"
+                      onError={e => { e.target.style.display = 'none'; }} />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-zinc-200 flex items-center justify-center text-xs font-medium text-zinc-500">
+                      {(user.name || '?')[0]}
+                    </div>
+                  )}
+                  <span className="text-sm text-zinc-600 hidden sm:inline" title={user.email}>{user.name}</span>
+                </div>
+              )}
+              <button onClick={handleSignOut}
+                className="text-zinc-400 hover:text-zinc-600 p-1.5 rounded-lg hover:bg-zinc-100 transition-colors" title="Sign out">
+                <Icon name="signOut" size={16} />
+              </button>
+            </div>
+          </header>
+
+          {/* Error banner */}
+          {error && (
+            <div className="bg-red-50 border-b border-red-100 px-4 py-2 flex items-center justify-between text-sm text-red-700">
+              <span>{error}</span>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+          )}
+
+          {/* Main layout */}
+          <div className="flex flex-1 min-h-0">
+            {/* Sidebar */}
+            <div className={`sidebar-transition border-r border-zinc-200 bg-zinc-50/50 flex-shrink-0 overflow-hidden
+              ${sidebarOpen ? 'w-60 min-w-[240px]' : 'w-0 min-w-0'}`}>
+              {sidebarOpen && (
+                <div className="w-60 h-full flex flex-col">
+                  <div className="flex-1 overflow-y-auto">
+                    <FolderTree />
+                  </div>
+                  {/* Thumbnail generator (admin only) */}
+                  {(user?.email?.toLowerCase().trim() === 'adam@today.design' || user?.email?.toLowerCase().trim() === 'kate@today.design') && <div className="border-t border-zinc-100 p-3">
+                    {!thumbGenActive && !thumbGenProgress?.done && (
+                      <button
+                        onClick={runThumbGen}
+                        disabled={!token}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-zinc-600 hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title="Generate small thumbnails for faster loading"
+                      >
+                        <Icon name="image" size={15} />
+                        <span>Build thumbnails</span>
+                        {Object.keys(thumbMap).length > 0 && (
+                          <span className="ml-auto text-xs text-zinc-400">{Object.keys(thumbMap).length}</span>
+                        )}
+                      </button>
+                    )}
+                    {thumbGenActive && thumbGenProgress && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-zinc-500">
+                          <span>Building thumbnails...</span>
+                          <span>{thumbGenProgress.current}/{thumbGenProgress.total}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-zinc-200 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-zinc-800 rounded-full transition-all duration-300"
+                            style={{ width: `${thumbGenProgress.total > 0 ? (thumbGenProgress.current / thumbGenProgress.total) * 100 : 0}%` }}
+                          />
+                        </div>
+                        <div className="text-[10px] text-zinc-400 truncate">{thumbGenProgress.name}</div>
+                      </div>
+                    )}
+                    {thumbGenProgress?.done && (
+                      <div className="text-xs text-zinc-500 px-2 py-1">
+                        Done — {thumbGenProgress.created} created{thumbGenProgress.failed > 0 ? `, ${thumbGenProgress.failed} failed` : ''}
+                      </div>
+                    )}
+                  </div>}
+                </div>
+              )}
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 flex flex-col min-w-0">
+              <Toolbar />
+              <PhotoGrid />
+            </div>
+          </div>
+
+          {/* Lightbox */}
+          <Lightbox />
+
+          {/* Tag Dialog */}
+          <TagDialog />
+        </div>
+      );
+    }
+
+    // ============================================================
+    // ROOT APP
+    // ============================================================
+    function App() {
+      const { token } = useApp();
+      return token ? <MainApp /> : <SignInScreen />;
+    }
+
+    // ============================================================
+    // RENDER
+    // ============================================================
+    ReactDOM.createRoot(document.getElementById('root')).render(
+      <AppProvider>
+        <App />
+      </AppProvider>
+    );
+  </script>
+</body>
+</html>
