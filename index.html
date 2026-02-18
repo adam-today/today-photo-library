@@ -30,7 +30,7 @@
     .photo-enter { animation: photoFadeIn 0.2s ease-out; }
     @keyframes photoFadeIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
     .sidebar-transition { transition: width 0.2s ease, min-width 0.2s ease, opacity 0.15s ease; }
-    input[type="range"] { -webkit-appearance: none; background: transparent; height: 14px; display: flex; align-items: center; }
+    input[type="range"] { -webkit-appearance: none; appearance: none; background: transparent; height: 14px; display: flex; align-items: center; }
     input[type="range"]::-webkit-slider-runnable-track { height: 4px; background: #e4e4e7; border-radius: 2px; width: 100%; }
     input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #18181b; cursor: pointer; border: 2px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.2); margin-top: -5px; }
     .check-bounce { animation: checkBounce 0.2s ease; }
@@ -135,6 +135,7 @@
         signOut: <svg {...props}><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
         sortAsc: <svg {...props}><path d="M11 5h10M11 9h7M11 13h4M3 17l3 3 3-3M6 18V4"/></svg>,
         info: <svg {...props}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
+        link: <svg {...props}><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>,
       };
       return icons[name] || null;
     };
@@ -1372,6 +1373,18 @@
         return () => document.removeEventListener('keydown', handleKeyDown);
       }, [handleKeyDown]);
 
+      const [linkCopied, setLinkCopied] = useState(false);
+      const copyDriveLink = useCallback(() => {
+        if (!photo) return;
+        navigator.clipboard.writeText(getDriveUrl(photo.id)).then(() => {
+          setLinkCopied(true);
+          setTimeout(() => setLinkCopied(false), 2000);
+        });
+      }, [photo]);
+
+      // Reset copied state when photo changes
+      useEffect(() => { setLinkCopied(false); }, [photo?.id]);
+
       // Early return AFTER all hooks
       if (!isOpen || !photo) return null;
 
@@ -1395,6 +1408,12 @@
               </div>
             </div>
             <div className="flex items-center gap-1">
+              <button onClick={copyDriveLink}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium mr-2 transition-all
+                  ${linkCopied ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/10 text-white hover:bg-white/20'}`}>
+                <Icon name={linkCopied ? 'check' : 'link'} size={15} />
+                <span>{linkCopied ? 'Copied' : 'Copy link'}</span>
+              </button>
               {(tags.length > 0 || serviceAreas.length > 0) && (
                 <div className="flex gap-1 mr-3 flex-wrap">
                   {tags.map(t => (
