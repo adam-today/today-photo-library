@@ -194,6 +194,9 @@
     function getDriveUrl(fileId) {
       return `https://drive.google.com/file/d/${fileId}/view`;
     }
+    function getDriveImageUrl(fileId) {
+      return `https://lh3.googleusercontent.com/d/${fileId}`;
+    }
     function formatDate(dateStr) {
       if (!dateStr) return '';
       const d = new Date(dateStr);
@@ -1376,7 +1379,7 @@
       const [linkCopied, setLinkCopied] = useState(false);
       const copyDriveLink = useCallback(() => {
         if (!photo) return;
-        navigator.clipboard.writeText(getDriveUrl(photo.id)).then(() => {
+        navigator.clipboard.writeText(getDriveImageUrl(photo.id)).then(() => {
           setLinkCopied(true);
           setTimeout(() => setLinkCopied(false), 2000);
         });
