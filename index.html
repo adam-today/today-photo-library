@@ -425,16 +425,17 @@
           if (status === 'denied') { _consentCache[folderId] = 'denied'; return 'denied'; }
           if (status === 'approved') { _consentCache[folderId] = 'approved'; return 'approved'; }
 
-          // Check siblings at the photo's direct parent level only
-          if (currentId === folderId && info.parents && info.parents[0]) {
+          // Check subfolders within the photo's direct parent — these are siblings of the photos
+          // (e.g. "Consent approved - USE THESE" folder sitting alongside the images)
+          if (currentId === folderId) {
             try {
-              const siblings = await driveApiFetch(
-                `/files?q=${encodeURIComponent(`'${info.parents[0]}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`)}&fields=${encodeURIComponent('files(id,name)')}&pageSize=100`,
+              const children = await driveApiFetch(
+                `/files?q=${encodeURIComponent(`'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`)}&fields=${encodeURIComponent('files(id,name)')}&pageSize=100`,
                 token
               );
-              if (siblings.files) {
-                const hasSiblingConsent = siblings.files.some(sib => getConsentStatus(sib.name) !== null);
-                if (hasSiblingConsent) {
+              if (children.files) {
+                const hasChildConsent = children.files.some(child => getConsentStatus(child.name) !== null);
+                if (hasChildConsent) {
                   _consentCache[folderId] = 'unconfirmed';
                   return 'unconfirmed';
                 }
@@ -2271,9 +2272,9 @@
             setLoadingStatus('');
             setIsLoadingPhotos(false);
 
-            // Resolve consent in the background — updates photos in-place and triggers re-render
+            // Resolve consent in the background — creates new objects so memo'd PhotoCard re-renders
             resolveConsentInBackground(files, token, () => {
-              if (!cancelled) setPhotos([...files]); // spread to trigger re-render
+              if (!cancelled) setPhotos(files.map(f => ({ ...f })));
             });
           }).catch(() => {
             if (!cancelled) setIsLoadingPhotos(false);
