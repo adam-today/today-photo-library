@@ -389,29 +389,32 @@
       return allFiles;
     }
 
+    // Global consent cache — persists across loads, keyed by folder ID
+    const _consentCache = {}; // { folderId: 'approved' | 'denied' | 'unconfirmed' | null }
+
     // Resolve consent status for photos loaded by ID (quick-filter path)
-    // Walks up each photo's folder ancestry checking folder names against consent patterns
-    async function resolveConsentForPhotos(photos, token) {
-      if (!photos || photos.length === 0) return photos;
-      const folderCache = {}; // { folderId: { name, parents } }
+    // Runs in the background — shows photos immediately, updates consent as it resolves
+    async function resolveConsentInBackground(photos, token, onUpdate) {
+      if (!photos || photos.length === 0) return;
+
+      const folderInfoCache = {}; // { folderId: { name, parents } }
 
       async function getFolderInfo(folderId) {
-        if (folderCache[folderId]) return folderCache[folderId];
+        if (folderInfoCache[folderId]) return folderInfoCache[folderId];
         try {
           const info = await driveApiFetch(`/files/${folderId}?fields=${encodeURIComponent('id,name,parents')}`, token);
-          folderCache[folderId] = { name: info.name, parents: info.parents || [] };
+          folderInfoCache[folderId] = { name: info.name, parents: info.parents || [] };
         } catch {
-          folderCache[folderId] = { name: '', parents: [] };
+          folderInfoCache[folderId] = { name: '', parents: [] };
         }
-        return folderCache[folderId];
+        return folderInfoCache[folderId];
       }
 
-      // Walk ancestry from a folder up to root, return consent status
       async function getAncestryConsent(folderId) {
+        if (_consentCache[folderId] !== undefined) return _consentCache[folderId];
+
         const visited = new Set();
         let currentId = folderId;
-        let siblingDenied = false;
-        let siblingApproved = false;
 
         while (currentId && !visited.has(currentId)) {
           visited.add(currentId);
@@ -419,22 +422,21 @@
 
           const info = await getFolderInfo(currentId);
           const status = getConsentStatus(info.name);
-          if (status === 'denied') return 'denied';
-          if (status === 'approved') return 'approved';
+          if (status === 'denied') { _consentCache[folderId] = 'denied'; return 'denied'; }
+          if (status === 'approved') { _consentCache[folderId] = 'approved'; return 'approved'; }
 
-          // Check siblings of this folder for consent labels
-          if (info.parents && info.parents[0] && currentId === folderId) {
-            // Only check siblings of the photo's direct parent
+          // Check siblings at the photo's direct parent level only
+          if (currentId === folderId && info.parents && info.parents[0]) {
             try {
               const siblings = await driveApiFetch(
                 `/files?q=${encodeURIComponent(`'${info.parents[0]}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`)}&fields=${encodeURIComponent('files(id,name)')}&pageSize=100`,
                 token
               );
               if (siblings.files) {
-                for (const sib of siblings.files) {
-                  const sibStatus = getConsentStatus(sib.name);
-                  if (sibStatus === 'denied') siblingDenied = true;
-                  if (sibStatus === 'approved') siblingApproved = true;
+                const hasSiblingConsent = siblings.files.some(sib => getConsentStatus(sib.name) !== null);
+                if (hasSiblingConsent) {
+                  _consentCache[folderId] = 'unconfirmed';
+                  return 'unconfirmed';
                 }
               }
             } catch {}
@@ -443,33 +445,46 @@
           currentId = info.parents[0] || null;
         }
 
-        // If sibling folders have consent labels but this folder doesn't match either, it's unconfirmed
-        if (siblingDenied || siblingApproved) return 'unconfirmed';
+        _consentCache[folderId] = null;
         return null;
       }
 
-      // Collect unique parent folder IDs
-      const parentMap = {}; // { parentId: consent }
+      // Collect unique parent folder IDs, prioritising uncached ones
       const uniqueParents = new Set();
+      let alreadyCached = 0;
       for (const photo of photos) {
         const pid = photo.parents?.[0];
-        if (pid) uniqueParents.add(pid);
+        if (!pid) continue;
+        if (_consentCache[pid] !== undefined) {
+          photo._consentStatus = _consentCache[pid];
+          alreadyCached++;
+        } else {
+          uniqueParents.add(pid);
+        }
       }
 
-      // Resolve consent for each unique parent (batched)
-      await Promise.all(
-        Array.from(uniqueParents).map(async pid => {
-          parentMap[pid] = await getAncestryConsent(pid);
-        })
-      );
-
-      // Annotate photos
-      for (const photo of photos) {
-        const pid = photo.parents?.[0];
-        photo._consentStatus = pid ? (parentMap[pid] || null) : null;
+      // If everything was cached, trigger one update and we're done
+      if (uniqueParents.size === 0) {
+        if (alreadyCached > 0) onUpdate();
+        return;
       }
 
-      return photos;
+      // Resolve in small batches, updating the UI periodically
+      const parentIds = Array.from(uniqueParents);
+      const batchSize = 5;
+      for (let i = 0; i < parentIds.length; i += batchSize) {
+        const batch = parentIds.slice(i, i + batchSize);
+        await Promise.all(batch.map(pid => getAncestryConsent(pid)));
+
+        // Apply resolved consent to photos in this batch
+        for (const photo of photos) {
+          const pid = photo.parents?.[0];
+          if (pid && _consentCache[pid] !== undefined) {
+            photo._consentStatus = _consentCache[pid];
+          }
+        }
+        onUpdate();
+      }
     }
 
     // Metadata file (shared tags, Official selects)
@@ -2249,15 +2264,17 @@
           setIsLoadingPhotos(true);
           setLoadingStatus(`Loading ${ids.length} photos...`);
 
-          fetchFilesByIds(ids, token).then(async files => {
+          fetchFilesByIds(ids, token).then(files => {
             if (cancelled) return;
-            setLoadingStatus('Checking consent status...');
-            const annotated = await resolveConsentForPhotos(files, token);
-            if (!cancelled) {
-              setPhotos(annotated);
-              setLoadingStatus('');
-              setIsLoadingPhotos(false);
-            }
+            // Show photos immediately
+            setPhotos(files);
+            setLoadingStatus('');
+            setIsLoadingPhotos(false);
+
+            // Resolve consent in the background — updates photos in-place and triggers re-render
+            resolveConsentInBackground(files, token, () => {
+              if (!cancelled) setPhotos([...files]); // spread to trigger re-render
+            });
           }).catch(() => {
             if (!cancelled) setIsLoadingPhotos(false);
           });
