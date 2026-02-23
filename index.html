@@ -94,6 +94,40 @@
     ];
 
     // ============================================================
+    // CONSENT DETECTION
+    // ============================================================
+    // Patterns that indicate photos in this folder ARE approved for use
+    const CONSENT_APPROVED_PATTERNS = [
+      /consent\s*approved/i,
+      /only\s*use\s*these/i,
+      /final\s*[-–—]\s*approved/i,
+      /approved\s*[-–—]\s*final/i,
+      /approved\s*(photos?|images?|for\s*use)/i,
+    ];
+
+    // Patterns that indicate photos in this folder should NOT be used
+    const CONSENT_DENIED_PATTERNS = [
+      /do\s*not\s*use/i,
+      /not\s*to\s*(be\s*)?use/i,
+      /due\s*(to\s*)?consent/i,
+      /no\s*consent/i,
+      /consent\s*not\s*(given|granted|confirmed|received)/i,
+      /unapproved/i,
+      /restricted/i,
+    ];
+
+    function getConsentStatus(folderName) {
+      if (!folderName) return null;
+      for (const p of CONSENT_DENIED_PATTERNS) {
+        if (p.test(folderName)) return 'denied';
+      }
+      for (const p of CONSENT_APPROVED_PATTERNS) {
+        if (p.test(folderName)) return 'approved';
+      }
+      return null;
+    }
+
+    // ============================================================
     // SVG ICONS
     // ============================================================
     const Icon = ({ name, size = 18, className = '', strokeWidth = 1.5 }) => {
@@ -136,6 +170,9 @@
         sortAsc: <svg {...props}><path d="M11 5h10M11 9h7M11 13h4M3 17l3 3 3-3M6 18V4"/></svg>,
         info: <svg {...props}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
         link: <svg {...props}><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>,
+        alertTriangle: <svg {...props}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+        shield: <svg {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+        shieldCheck: <svg {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>,
       };
       return icons[name] || null;
     };
@@ -276,7 +313,11 @@
       return all.filter(f => CONFIG.IMAGE_MIMES.has(f.mimeType));
     }
 
-    async function loadImagesRecursive(folderId, token, onProgress) {
+    // Global consent map: folderId → 'approved' | 'denied' | null
+    // Also tracks whether a sibling folder has consent info (meaning this folder's photos are ambiguous)
+    const _consentMap = {}; // folderId → { status, hasSiblingConsent }
+
+    async function loadImagesRecursive(folderId, token, onProgress, inheritedConsent = null) {
       // Load images from this folder
       const all = await listFolderChildren(folderId, token);
       const images = all.filter(f => CONFIG.IMAGE_MIMES.has(f.mimeType));
@@ -284,13 +325,45 @@
 
       if (onProgress) onProgress(images.length, subfolders.length);
 
+      // Check if any subfolder has consent-related naming
+      const subfolderConsents = subfolders.map(f => ({ id: f.id, name: f.name, consent: getConsentStatus(f.name) }));
+      const hasConsentSubfolder = subfolderConsents.some(s => s.consent !== null);
+
+      // Determine consent for THIS folder's direct images:
+      // If this folder itself was detected as approved/denied, use that.
+      // If a child subfolder mentions consent, images here are ambiguous (not confirmed).
+      const thisConsent = inheritedConsent;
+      _consentMap[folderId] = {
+        status: thisConsent,
+        hasSiblingConsent: hasConsentSubfolder,
+      };
+
+      // Tag images with their consent status
+      for (const img of images) {
+        if (thisConsent === 'approved') {
+          img._consentStatus = 'approved';
+        } else if (thisConsent === 'denied') {
+          img._consentStatus = 'denied';
+        } else if (hasConsentSubfolder) {
+          // This folder has consent-labelled subfolders but the image isn't in one
+          img._consentStatus = 'unconfirmed';
+        } else {
+          img._consentStatus = null; // no consent info at this level
+        }
+      }
+
       // Recursively load from subfolders (in parallel, batched to avoid rate limits)
       const batchSize = 5;
       let allImages = [...images];
       for (let i = 0; i < subfolders.length; i += batchSize) {
         const batch = subfolders.slice(i, i + batchSize);
         const results = await Promise.all(
-          batch.map(f => loadImagesRecursive(f.id, token, onProgress))
+          batch.map(f => {
+            const folderConsent = getConsentStatus(f.name);
+            // Pass down: folder's own consent status, or inherited
+            const effectiveConsent = folderConsent || inheritedConsent;
+            return loadImagesRecursive(f.id, token, onProgress, effectiveConsent);
+          })
         );
         for (const r of results) allImages = allImages.concat(r);
       }
@@ -314,6 +387,89 @@
         allFiles = allFiles.concat(results.filter(f => f && f.id));
       }
       return allFiles;
+    }
+
+    // Resolve consent status for photos loaded by ID (quick-filter path)
+    // Walks up each photo's folder ancestry checking folder names against consent patterns
+    async function resolveConsentForPhotos(photos, token) {
+      if (!photos || photos.length === 0) return photos;
+      const folderCache = {}; // { folderId: { name, parents } }
+
+      async function getFolderInfo(folderId) {
+        if (folderCache[folderId]) return folderCache[folderId];
+        try {
+          const info = await driveApiFetch(`/files/${folderId}?fields=${encodeURIComponent('id,name,parents')}`, token);
+          folderCache[folderId] = { name: info.name, parents: info.parents || [] };
+        } catch {
+          folderCache[folderId] = { name: '', parents: [] };
+        }
+        return folderCache[folderId];
+      }
+
+      // Walk ancestry from a folder up to root, return consent status
+      async function getAncestryConsent(folderId) {
+        const visited = new Set();
+        let currentId = folderId;
+        let siblingDenied = false;
+        let siblingApproved = false;
+
+        while (currentId && !visited.has(currentId)) {
+          visited.add(currentId);
+          if (currentId === CONFIG.ROOT_FOLDER_ID) break;
+
+          const info = await getFolderInfo(currentId);
+          const status = getConsentStatus(info.name);
+          if (status === 'denied') return 'denied';
+          if (status === 'approved') return 'approved';
+
+          // Check siblings of this folder for consent labels
+          if (info.parents && info.parents[0] && currentId === folderId) {
+            // Only check siblings of the photo's direct parent
+            try {
+              const siblings = await driveApiFetch(
+                `/files?q=${encodeURIComponent(`'${info.parents[0]}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`)}&fields=${encodeURIComponent('files(id,name)')}&pageSize=100`,
+                token
+              );
+              if (siblings.files) {
+                for (const sib of siblings.files) {
+                  const sibStatus = getConsentStatus(sib.name);
+                  if (sibStatus === 'denied') siblingDenied = true;
+                  if (sibStatus === 'approved') siblingApproved = true;
+                }
+              }
+            } catch {}
+          }
+
+          currentId = info.parents[0] || null;
+        }
+
+        // If sibling folders have consent labels but this folder doesn't match either, it's unconfirmed
+        if (siblingDenied || siblingApproved) return 'unconfirmed';
+        return null;
+      }
+
+      // Collect unique parent folder IDs
+      const parentMap = {}; // { parentId: consent }
+      const uniqueParents = new Set();
+      for (const photo of photos) {
+        const pid = photo.parents?.[0];
+        if (pid) uniqueParents.add(pid);
+      }
+
+      // Resolve consent for each unique parent (batched)
+      await Promise.all(
+        Array.from(uniqueParents).map(async pid => {
+          parentMap[pid] = await getAncestryConsent(pid);
+        })
+      );
+
+      // Annotate photos
+      for (const photo of photos) {
+        const pid = photo.parents?.[0];
+        photo._consentStatus = pid ? (parentMap[pid] || null) : null;
+      }
+
+      return photos;
     }
 
     // Metadata file (shared tags, Official selects)
@@ -579,6 +735,7 @@
       const [searchQuery, setSearchQuery] = useState('');
       const [filterPeople, setFilterPeople] = useState([]);
       const [filterServiceAreas, setFilterServiceAreas] = useState([]);
+      const [filterConsent, setFilterConsent] = useState(null); // null | 'unconfirmed' | 'denied' | 'issues'
       const [sortBy, setSortBy] = useState('date');
       const [sortOrder, setSortOrder] = useState('desc');
       const [quickFilter, setQuickFilter] = useState('adamSelects'); // 'favourites' | 'adamSelects' | 'myPicks' | null
@@ -751,6 +908,7 @@
         searchQuery, setSearchQuery,
         filterPeople, setFilterPeople,
         filterServiceAreas, setFilterServiceAreas,
+        filterConsent, setFilterConsent,
         sortBy, setSortBy, sortOrder, setSortOrder,
         quickFilter, setQuickFilter,
         selectedPhotos, setSelectedPhotos, selectMode, setSelectMode, toggleSelect,
@@ -1147,6 +1305,16 @@
               </div>
             )}
           </div>
+
+          {/* Consent warning badge (always visible) */}
+          {!selectMode && (photo._consentStatus === 'denied' || photo._consentStatus === 'unconfirmed') && (
+            <div className={`absolute bottom-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full shadow-sm text-[9px] font-semibold uppercase tracking-wide
+              ${photo._consentStatus === 'denied' ? 'bg-red-500 text-white' : 'bg-amber-400 text-amber-950'}`}
+              title={photo._consentStatus === 'denied' ? 'Do not use — consent denied' : 'Consent not confirmed'}>
+              <Icon name="alertTriangle" size={10} strokeWidth={2.5} />
+              <span>{photo._consentStatus === 'denied' ? 'Do not use' : 'No consent'}</span>
+            </div>
+          )}
         </div>
       );
     });
@@ -1156,7 +1324,7 @@
     // ============================================================
     function PhotoGrid() {
       const { photos, thumbSize, isLoadingPhotos, loadingStatus, searchQuery, filterPeople,
-        filterServiceAreas, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata, currentFolderName } = useApp();
+        filterServiceAreas, filterConsent, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata, currentFolderName } = useApp();
 
       const filteredPhotos = useMemo(() => {
         let result = [...photos];
@@ -1195,6 +1363,15 @@
           });
         }
 
+        // Consent filter
+        if (filterConsent === 'issues') {
+          result = result.filter(p => p._consentStatus === 'denied' || p._consentStatus === 'unconfirmed');
+        } else if (filterConsent === 'denied') {
+          result = result.filter(p => p._consentStatus === 'denied');
+        } else if (filterConsent === 'unconfirmed') {
+          result = result.filter(p => p._consentStatus === 'unconfirmed');
+        }
+
         // Sort
         result.sort((a, b) => {
           let cmp = 0;
@@ -1205,7 +1382,7 @@
         });
 
         return result;
-      }, [photos, searchQuery, filterPeople, filterServiceAreas, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata]);
+      }, [photos, searchQuery, filterPeople, filterServiceAreas, filterConsent, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata]);
 
       if (isLoadingPhotos) {
         return (
@@ -1269,7 +1446,7 @@
     function Lightbox() {
       const { lightboxIdx, setLightboxIdx, photos, favourites, toggleFavourite,
         myPicks, toggleMyPick, metadata, toggleAdamSelect, setTagDialogPhoto, searchQuery, filterPeople,
-        filterServiceAreas, sortBy, sortOrder, quickFilter, token, isAdam } = useApp();
+        filterServiceAreas, filterConsent, sortBy, sortOrder, quickFilter, token, isAdam } = useApp();
 
       const [imgLoaded, setImgLoaded] = useState(false);
       const [imgError, setImgError] = useState(false);
@@ -1300,6 +1477,13 @@
             return filterServiceAreas.some(area => areas.includes(area));
           });
         }
+        if (filterConsent === 'issues') {
+          result = result.filter(p => p._consentStatus === 'denied' || p._consentStatus === 'unconfirmed');
+        } else if (filterConsent === 'denied') {
+          result = result.filter(p => p._consentStatus === 'denied');
+        } else if (filterConsent === 'unconfirmed') {
+          result = result.filter(p => p._consentStatus === 'unconfirmed');
+        }
         result.sort((a, b) => {
           let cmp = 0;
           if (sortBy === 'name') cmp = a.name.localeCompare(b.name);
@@ -1307,7 +1491,7 @@
           return sortOrder === 'desc' ? -cmp : cmp;
         });
         return result;
-      }, [photos, searchQuery, filterPeople, filterServiceAreas, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata]);
+      }, [photos, searchQuery, filterPeople, filterServiceAreas, filterConsent, sortBy, sortOrder, quickFilter, favourites, myPicks, metadata]);
 
       const isOpen = lightboxIdx >= 0 && lightboxIdx < filteredPhotos.length;
       const photo = isOpen ? filteredPhotos[lightboxIdx] : null;
@@ -1409,6 +1593,13 @@
                   )}
                 </div>
               </div>
+              {(photo._consentStatus === 'denied' || photo._consentStatus === 'unconfirmed') && (
+                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium ml-3
+                  ${photo._consentStatus === 'denied' ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}>
+                  <Icon name="alertTriangle" size={15} strokeWidth={2} />
+                  <span>{photo._consentStatus === 'denied' ? 'Do not use' : 'Consent not confirmed'}</span>
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-1">
               <button onClick={copyDriveLink}
@@ -1652,16 +1843,18 @@
     function Toolbar() {
       const { searchQuery, setSearchQuery, thumbSize, setThumbSize, selectMode, setSelectMode,
         selectedPhotos, setSelectedPhotos, photos, filterPeople, setFilterPeople,
-        filterServiceAreas, setFilterServiceAreas,
+        filterServiceAreas, setFilterServiceAreas, filterConsent, setFilterConsent,
         sortBy, setSortBy, sortOrder, setSortOrder, token, setZipProgress, zipProgress,
         currentFolderName, sidebarOpen, setSidebarOpen, quickFilter } = useApp();
 
       const [showFilterMenu, setShowFilterMenu] = useState(false);
       const [showServiceFilterMenu, setShowServiceFilterMenu] = useState(false);
+      const [showConsentMenu, setShowConsentMenu] = useState(false);
       const [showSortMenu, setShowSortMenu] = useState(false);
       const [peopleSearch, setPeopleSearch] = useState('');
       const filterRef = useRef(null);
       const serviceFilterRef = useRef(null);
+      const consentFilterRef = useRef(null);
       const sortRef = useRef(null);
 
       // Close dropdowns on outside click
@@ -1669,6 +1862,7 @@
         const handler = (e) => {
           if (filterRef.current && !filterRef.current.contains(e.target)) setShowFilterMenu(false);
           if (serviceFilterRef.current && !serviceFilterRef.current.contains(e.target)) setShowServiceFilterMenu(false);
+          if (consentFilterRef.current && !consentFilterRef.current.contains(e.target)) setShowConsentMenu(false);
           if (sortRef.current && !sortRef.current.contains(e.target)) setShowSortMenu(false);
         };
         document.addEventListener('mousedown', handler);
@@ -1828,6 +2022,43 @@
                       <button onClick={() => setFilterServiceAreas([])}
                         className="w-full text-xs text-zinc-500 hover:text-zinc-700 py-1">
                         Clear all
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Consent filter */}
+            <div className="relative" ref={consentFilterRef}>
+              <button
+                onClick={() => setShowConsentMenu(!showConsentMenu)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-lg transition-colors
+                  ${filterConsent ? 'bg-amber-500 text-white border-amber-500' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
+              >
+                <Icon name="shield" size={14} />
+                <span>{filterConsent === 'denied' ? 'Do not use' : filterConsent === 'unconfirmed' ? 'Unconfirmed' : filterConsent === 'issues' ? 'All issues' : 'Consent'}</span>
+              </button>
+              {showConsentMenu && (
+                <div className="absolute top-full left-0 mt-1 w-52 bg-white border border-zinc-200 rounded-xl shadow-lg z-20 p-1">
+                  {[
+                    { value: 'issues', label: 'All consent issues', icon: 'alertTriangle', color: 'text-amber-600' },
+                    { value: 'denied', label: 'Do not use', icon: 'alertTriangle', color: 'text-red-600' },
+                    { value: 'unconfirmed', label: 'Unconfirmed', icon: 'shield', color: 'text-amber-500' },
+                  ].map(opt => (
+                    <button key={opt.value}
+                      onClick={() => { setFilterConsent(filterConsent === opt.value ? null : opt.value); setShowConsentMenu(false); }}
+                      className={`w-full text-left flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors
+                        ${filterConsent === opt.value ? 'bg-amber-50 text-amber-900' : 'text-zinc-600 hover:bg-zinc-50'}`}>
+                      <Icon name={opt.icon} size={14} className={filterConsent === opt.value ? opt.color : ''} />
+                      {opt.label}
+                    </button>
+                  ))}
+                  {filterConsent && (
+                    <div className="border-t border-zinc-100 mt-1 pt-1">
+                      <button onClick={() => { setFilterConsent(null); setShowConsentMenu(false); }}
+                        className="w-full text-xs text-zinc-500 hover:text-zinc-700 py-1.5">
+                        Clear filter
                       </button>
                     </div>
                   )}
@@ -2018,9 +2249,12 @@
           setIsLoadingPhotos(true);
           setLoadingStatus(`Loading ${ids.length} photos...`);
 
-          fetchFilesByIds(ids, token).then(files => {
+          fetchFilesByIds(ids, token).then(async files => {
+            if (cancelled) return;
+            setLoadingStatus('Checking consent status...');
+            const annotated = await resolveConsentForPhotos(files, token);
             if (!cancelled) {
-              setPhotos(files);
+              setPhotos(annotated);
               setLoadingStatus('');
               setIsLoadingPhotos(false);
             }
